@@ -106,7 +106,14 @@ function ProgressBar({ value, label, dark = false }) {
         <span>{label}</span>
         <span>{value}%</span>
       </div>
-      <div className={cx("h-2.5 overflow-hidden rounded-full", dark ? "bg-white/15" : "bg-slate-100")}>
+      <div
+        className={cx("h-2.5 overflow-hidden rounded-full", dark ? "bg-white/15" : "bg-slate-100")}
+        role="progressbar"
+        aria-label={label}
+        aria-valuemin="0"
+        aria-valuemax="100"
+        aria-valuenow={value}
+      >
         <div className="h-full rounded-full bg-gradient-to-r from-olive to-gold" style={{ width: `${value}%` }} />
       </div>
     </div>
@@ -181,6 +188,7 @@ function App() {
                     setActiveView(item.id);
                     setMobileOpen(false);
                   }}
+                  aria-current={active ? "page" : undefined}
                   className={cx(
                     "flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left text-sm font-bold transition",
                     active ? "bg-gold text-navy" : "text-slate-200 hover:bg-white/10 hover:text-white",
@@ -465,7 +473,7 @@ function FilterSelect({ label, value, options, onChange }) {
         className="h-11 w-full appearance-none rounded-md border border-slate-200 bg-white px-3 pr-9 text-sm font-bold text-slate-700 outline-none ring-gold/30 focus:border-gold focus:ring-4"
       >
         <option value="All">All {label}</option>
-        {options.map((option) => <option key={option} value={option}>{option}</option>)}
+        {options.map((option) => <option key={option} value={option}>{label === "Phase" ? labelPhase(option) : option}</option>)}
       </select>
       <ChevronDown className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
     </label>
@@ -666,6 +674,11 @@ function ScopeBoundaries() {
       tone: "future",
     },
     {
+      label: "Out of Current Scope",
+      copy: "This is acknowledged, but it is not part of the current setup engagement.",
+      tone: "separate",
+    },
+    {
       label: "Separate Quote Required",
       copy: "This needs its own brief, timeline, and commercial approval before it starts.",
       tone: "separate",
@@ -733,6 +746,7 @@ function labelPhase(phase) {
   if (phase === "Retainer") return "Retainer: Keep It Running";
   if (phase === "Phase 2") return "Phase 2: Public Growth";
   if (phase === "Phase 3") return "Phase 3: Systems & Automation";
+  if (phase === "Out of Scope") return "Out of Current Scope";
   return phase;
 }
 
