@@ -17,6 +17,7 @@ import {
   Search,
   ShieldCheck,
   Sparkles,
+  Target,
   Users,
   X,
 } from "lucide-react";
@@ -64,6 +65,14 @@ const priorityStyles = {
   Low: "border-slate-200 bg-slate-50 text-slate-600",
 };
 
+const phaseStyles = {
+  "Phase 1": "border-gold/40 bg-gold/10 text-[#795000]",
+  Retainer: "border-blue-200 bg-blue-50 text-blue-700",
+  "Phase 2": "border-olive/40 bg-olive/10 text-[#4c5616]",
+  "Phase 3": "border-cyan-200 bg-cyan-50 text-cyan-700",
+  "Out of Scope": "border-zinc-300 bg-zinc-100 text-zinc-700",
+};
+
 function cx(...classes) {
   return classes.filter(Boolean).join(" ");
 }
@@ -72,24 +81,32 @@ function Badge({ children, className = "" }) {
   return <span className={cx("pill", className)}>{children}</span>;
 }
 
+function StatusBadge({ status }) {
+  return <Badge className={statusStyles[status] ?? statusStyles["Not Started"]}>{status}</Badge>;
+}
+
+function PhaseBadge({ phase }) {
+  return <Badge className={phaseStyles[phase] ?? phaseStyles["Out of Scope"]}>{labelPhase(phase)}</Badge>;
+}
+
 function SectionHeader({ eyebrow, title, copy }) {
   return (
-    <div className="mb-5">
+    <div className="mb-6 max-w-4xl">
       {eyebrow && <p className="eyebrow">{eyebrow}</p>}
-      <h2 className="mt-1 text-2xl font-black text-navy md:text-3xl">{title}</h2>
-      {copy && <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{copy}</p>}
+      <h2 className="mt-2 text-2xl font-black leading-tight text-navy md:text-4xl">{title}</h2>
+      {copy && <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-600 md:text-base">{copy}</p>}
     </div>
   );
 }
 
-function ProgressBar({ value, label }) {
+function ProgressBar({ value, label, dark = false }) {
   return (
     <div>
-      <div className="mb-2 flex items-center justify-between text-xs font-bold text-slate-600">
+      <div className={cx("mb-2 flex items-center justify-between text-xs font-bold", dark ? "text-slate-200" : "text-slate-600")}>
         <span>{label}</span>
         <span>{value}%</span>
       </div>
-      <div className="h-2.5 overflow-hidden rounded-full bg-slate-100">
+      <div className={cx("h-2.5 overflow-hidden rounded-full", dark ? "bg-white/15" : "bg-slate-100")}>
         <div className="h-full rounded-full bg-gradient-to-r from-olive to-gold" style={{ width: `${value}%` }} />
       </div>
     </div>
@@ -204,6 +221,7 @@ function Dashboard({ metrics }) {
   const currentFocus = tasks.filter((task) => ["In Progress", "Blocked", "Waiting on Client"].includes(task.status)).slice(0, 5);
   const blockers = tasks.filter((task) => task.status === "Blocked");
   const clientNeeded = tasks.filter((task) => task.status === "Waiting on Client").slice(0, 5);
+  const phaseOneActive = tasks.filter((task) => task.phase === "Phase 1" && task.status !== "Done").length;
   const launchReady = launchChecklist.filter((item) => item.status === "Done").length;
   const launchPercent = Math.round((launchReady / launchChecklist.length) * 100);
 
@@ -219,18 +237,43 @@ function Dashboard({ metrics }) {
 
   return (
     <>
-      <SectionHeader
-        eyebrow="Executive Overview"
-        title="Phase 1: Setup Command Center"
-        copy="A client-ready view of what is active, what needs input, and what is deliberately parked for retainer or later phases."
-      />
+      <div className="mb-6 overflow-hidden rounded-lg border border-navy/10 bg-navy shadow-premium">
+        <div className="grid gap-0 xl:grid-cols-[1.45fr_0.9fr]">
+          <div className="p-5 text-white md:p-7">
+            <p className="text-xs font-black uppercase tracking-[0.18em] text-gold">Executive Command Center</p>
+            <h2 className="mt-3 text-3xl font-black leading-tight md:text-5xl">Phase 1: Setup Control Room</h2>
+            <p className="mt-4 max-w-2xl text-sm leading-6 text-slate-200 md:text-base">
+              A live working view of what is moving, what needs client input, and what has been deliberately parked for retainer or later phases.
+            </p>
+            <div className="mt-6 grid gap-3 sm:grid-cols-3">
+              <CommandSignal label="Active Phase 1 items" value={phaseOneActive} />
+              <CommandSignal label="Client decisions" value={metrics.waiting} />
+              <CommandSignal label="Blocked handoffs" value={metrics.blocked} alert={metrics.blocked > 0} />
+            </div>
+          </div>
+          <div className="border-t border-white/10 bg-white/[0.04] p-5 md:p-7 xl:border-l xl:border-t-0">
+            <div className="rounded-lg border border-white/10 bg-white/10 p-4">
+              <p className="text-xs font-bold uppercase tracking-[0.16em] text-gold">Launch Posture</p>
+              <div className="mt-5 space-y-5">
+                <ProgressBar value={metrics.phaseProgress} label="Phase 1 setup complete" dark />
+                <ProgressBar value={launchPercent} label="Launch readiness complete" dark />
+              </div>
+            </div>
+            <p className="mt-4 text-sm leading-6 text-slate-300">
+              Phase 1 builds the foundation. The retainer keeps it running. Future phases turn it into a scalable system.
+            </p>
+          </div>
+        </div>
+      </div>
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {statCards.map(([label, value, Icon]) => (
-          <div key={label} className="panel p-5">
+          <div key={label} className="panel group p-5 transition hover:-translate-y-0.5 hover:border-gold/50 hover:shadow-premium">
             <div className="flex items-center justify-between">
               <p className="text-sm font-bold text-slate-500">{label}</p>
-              <Icon size={19} className="text-gold" />
+              <span className="rounded-md bg-gold/10 p-2 text-gold transition group-hover:bg-gold group-hover:text-navy">
+                <Icon size={18} />
+              </span>
             </div>
             <p className="mt-3 text-3xl font-black text-navy">{value}</p>
           </div>
@@ -246,15 +289,18 @@ function Dashboard({ metrics }) {
       <div className="mt-6 grid gap-5 xl:grid-cols-[1.35fr_0.95fr]">
         <div className="panel p-5">
           <div className="mb-4 flex items-center justify-between gap-3">
-            <h3 className="text-lg font-black text-navy">Current Focus</h3>
+            <div>
+              <p className="eyebrow">Now Moving</p>
+              <h3 className="mt-1 text-xl font-black text-navy">Current Focus</h3>
+            </div>
             <Badge className="border-gold/40 bg-gold/10 text-[#795000]">Urgent Attention</Badge>
           </div>
           <TaskList tasks={currentFocus} />
         </div>
 
         <div className="space-y-5">
-          <Snapshot title="Blockers" icon={AlertTriangle} items={blockers} empty="No blockers recorded." />
-          <Snapshot title="Client Input Needed" icon={Users} items={clientNeeded} empty="No client input pending." />
+          <Snapshot title="Blockers" icon={AlertTriangle} items={blockers} empty="No blockers recorded. The setup path is clear for now." />
+          <Snapshot title="Client Input Needed" icon={Users} items={clientNeeded} empty="No client input pending. Production can continue without a decision delay." />
         </div>
       </div>
 
@@ -265,7 +311,7 @@ function Dashboard({ metrics }) {
             <div key={item.id} className="rounded-md border border-slate-200 bg-slate-50 p-4">
               <p className="font-bold text-navy">{item.item}</p>
               <div className="mt-3 flex flex-wrap gap-2">
-                <Badge className={statusStyles[item.status]}>{item.status}</Badge>
+                <StatusBadge status={item.status} />
                 <Badge className={priorityStyles[item.priority]}>{item.priority}</Badge>
               </div>
             </div>
@@ -276,6 +322,15 @@ function Dashboard({ metrics }) {
   );
 }
 
+function CommandSignal({ label, value, alert = false }) {
+  return (
+    <div className={cx("rounded-md border p-4", alert ? "border-red-300/40 bg-red-400/10" : "border-white/10 bg-white/10")}>
+      <p className="text-2xl font-black text-white">{value}</p>
+      <p className="mt-1 text-xs font-bold uppercase tracking-[0.12em] text-slate-300">{label}</p>
+    </div>
+  );
+}
+
 function Snapshot({ title, icon: Icon, items, empty }) {
   return (
     <div className="panel p-5">
@@ -283,7 +338,7 @@ function Snapshot({ title, icon: Icon, items, empty }) {
         <Icon size={18} className="text-gold" />
         <h3 className="text-lg font-black text-navy">{title}</h3>
       </div>
-      {items.length ? <TaskList tasks={items} compact /> : <p className="rounded-md bg-slate-50 p-4 text-sm text-slate-600">{empty}</p>}
+      {items.length ? <TaskList tasks={items} compact /> : <EmptyState icon={Icon} title={title} copy={empty} compact />}
     </div>
   );
 }
@@ -296,10 +351,10 @@ function TaskList({ tasks: taskList, compact = false }) {
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <p className="font-black text-navy">{task.task}</p>
-              {!compact && <p className="mt-1 text-sm text-slate-600">{task.nextAction}</p>}
+              {!compact && <p className="mt-1 text-sm leading-6 text-slate-600">{task.nextAction}</p>}
             </div>
             <div className="flex flex-wrap gap-2">
-              <Badge className={statusStyles[task.status]}>{task.status}</Badge>
+              <StatusBadge status={task.status} />
               <Badge className={priorityStyles[task.priority]}>{task.priority}</Badge>
             </div>
           </div>
@@ -349,28 +404,38 @@ function TaskCommandCenter() {
         </div>
       </div>
 
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-4 py-3 shadow-lift">
+        <div className="flex items-center gap-2 text-sm font-bold text-slate-600">
+          <Target size={17} className="text-gold" />
+          Showing <span className="text-navy">{filteredTasks.length}</span> of <span className="text-navy">{tasks.length}</span> tracker items
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {phases.map((phase) => <PhaseBadge key={phase} phase={phase} />)}
+        </div>
+      </div>
+
       <div className="mt-5 hidden overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lift xl:block">
-        <table className="w-full border-collapse text-left text-sm">
+        <table className="w-full table-fixed border-collapse text-left text-sm">
           <thead className="bg-navy text-white">
             <tr>
               {["Task", "Category", "Phase", "Responsible Party", "Status", "Priority", "Due Date", "Client Input Needed", "Notes", "Next Action"].map((heading) => (
-                <th key={heading} className="px-4 py-3 font-bold">{heading}</th>
+                <th key={heading} className="px-4 py-3 text-xs font-black uppercase tracking-[0.08em]">{heading}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {filteredTasks.map((task) => (
               <tr key={task.id} className="border-b border-slate-100 align-top hover:bg-slate-50">
-                <td className="px-4 py-4 font-black text-navy">{task.task}</td>
-                <td className="px-4 py-4">{task.category}</td>
-                <td className="px-4 py-4">{labelPhase(task.phase)}</td>
+                <td className="px-4 py-4 font-black leading-5 text-navy">{task.task}</td>
+                <td className="px-4 py-4 text-slate-600">{task.category}</td>
+                <td className="px-4 py-4"><PhaseBadge phase={task.phase} /></td>
                 <td className="px-4 py-4">{task.responsible}</td>
-                <td className="px-4 py-4"><Badge className={statusStyles[task.status]}>{task.status}</Badge></td>
+                <td className="px-4 py-4"><StatusBadge status={task.status} /></td>
                 <td className="px-4 py-4"><Badge className={priorityStyles[task.priority]}>{task.priority}</Badge></td>
                 <td className="px-4 py-4">{task.dueDate || "Parked"}</td>
-                <td className="px-4 py-4 text-slate-600">{task.clientInput}</td>
-                <td className="px-4 py-4 text-slate-600">{task.notes}</td>
-                <td className="px-4 py-4 text-slate-600">{task.nextAction}</td>
+                <td className="px-4 py-4 leading-5 text-slate-600">{task.clientInput}</td>
+                <td className="px-4 py-4 leading-5 text-slate-600">{task.notes}</td>
+                <td className="px-4 py-4 leading-5 text-slate-600">{task.nextAction}</td>
               </tr>
             ))}
           </tbody>
@@ -382,10 +447,8 @@ function TaskCommandCenter() {
       </div>
 
       {!filteredTasks.length && (
-        <div className="mt-5 panel p-8 text-center">
-          <Filter className="mx-auto text-gold" />
-          <p className="mt-3 font-black text-navy">No tasks match this view.</p>
-          <p className="mt-1 text-sm text-slate-600">Adjust a filter or search term to bring items back into focus.</p>
+        <div className="mt-5">
+          <EmptyState icon={Filter} title="No tasks match this view" copy="Adjust a filter or search term to bring items back into focus." />
         </div>
       )}
     </>
@@ -411,14 +474,17 @@ function FilterSelect({ label, value, options, onChange }) {
 
 function TaskCard({ task }) {
   return (
-    <div className="panel p-4">
+    <div className="panel overflow-hidden">
+      <div className={cx("h-1", task.phase === "Phase 1" ? "bg-gold" : task.phase === "Retainer" ? "bg-blue-500" : task.phase === "Phase 2" ? "bg-olive" : task.phase === "Phase 3" ? "bg-cyan-500" : "bg-zinc-400")} />
+      <div className="p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="text-lg font-black text-navy">{task.task}</p>
-          <p className="mt-1 text-sm text-slate-500">{task.category} / {labelPhase(task.phase)} / {task.responsible}</p>
+          <p className="mt-1 text-sm text-slate-500">{task.category} / {task.responsible}</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Badge className={statusStyles[task.status]}>{task.status}</Badge>
+          <PhaseBadge phase={task.phase} />
+          <StatusBadge status={task.status} />
           <Badge className={priorityStyles[task.priority]}>{task.priority}</Badge>
         </div>
       </div>
@@ -427,6 +493,7 @@ function TaskCard({ task }) {
         <Info label="Client Input Needed" value={task.clientInput} />
         <Info label="Notes" value={task.notes} />
         <Info label="Next Action" value={task.nextAction} />
+      </div>
       </div>
     </div>
   );
@@ -445,7 +512,7 @@ function PhaseScope() {
           <div key={item.title} className="panel p-5">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <h3 className="text-xl font-black text-navy">{item.title}</h3>
-              <Badge className={statusStyles[item.status]}>{item.status}</Badge>
+              <StatusBadge status={item.status} />
             </div>
             <p className="mt-3 text-sm leading-6 text-slate-600">{item.description}</p>
             <div className="mt-5 grid gap-4 md:grid-cols-2">
@@ -498,12 +565,15 @@ function LaterPhases() {
 }
 
 function ItemGroup({ title, items, tone }) {
-  const toneClass = tone === "retainer" ? "bg-blue-50 text-blue-700" : tone === "separate" ? "bg-zinc-100 text-zinc-700" : "bg-olive/10 text-[#4c5616]";
+  const toneClass = tone === "retainer" ? "bg-blue-50 text-blue-700" : tone === "separate" ? "bg-zinc-100 text-zinc-700" : tone === "included" ? "bg-gold/10 text-[#795000]" : "bg-olive/10 text-[#4c5616]";
+  const borderClass = tone === "retainer" ? "border-l-blue-500" : tone === "separate" ? "border-l-zinc-400" : tone === "included" ? "border-l-gold" : "border-l-olive";
   return (
-    <div className="panel p-5">
+    <div className={cx("panel border-l-4 p-5", borderClass)}>
       <div className="mb-4 flex items-center justify-between gap-3">
         <h3 className="text-lg font-black text-navy">{title}</h3>
-        <Badge className={cx("border-transparent", toneClass)}>{tone === "separate" ? "Separate Quote Required" : "Parked for Later"}</Badge>
+        <Badge className={cx("border-transparent", toneClass)}>
+          {tone === "included" ? "Included" : tone === "retainer" ? "Retainer item" : tone === "separate" ? "Separate Quote Required" : "Parked for Later"}
+        </Badge>
       </div>
       <div className="grid gap-3 sm:grid-cols-2">
         {items.map((item) => (
@@ -530,7 +600,7 @@ function ClientAssets() {
               <Badge className={asset.requirement === "Required" ? "border-red-200 bg-red-50 text-red-700" : "border-slate-200 bg-slate-50 text-slate-600"}>{asset.requirement}</Badge>
             </div>
             <div className="mt-4 flex flex-wrap gap-2">
-              <Badge className={statusStyles[asset.status]}>{asset.status}</Badge>
+              <StatusBadge status={asset.status} />
               {asset.dueDate && <Badge className="border-gold/40 bg-gold/10 text-[#795000]">{asset.dueDate}</Badge>}
             </div>
             <div className="mt-4 text-sm">
@@ -566,7 +636,7 @@ function LaunchReadiness() {
                 <h3 className="font-black text-navy">{item.item}</h3>
                 <p className="mt-1 text-sm text-slate-500">Owner: {item.owner}</p>
                 <div className="mt-3 flex flex-wrap gap-2">
-                  <Badge className={statusStyles[item.status]}>{item.status}</Badge>
+                  <StatusBadge status={item.status} />
                   <Badge className={priorityStyles[item.priority]}>{item.priority}</Badge>
                 </div>
               </div>
@@ -579,30 +649,73 @@ function LaunchReadiness() {
 }
 
 function ScopeBoundaries() {
+  const boundaryMessages = [
+    {
+      label: "Phase 1 included",
+      copy: "This is active setup work inside the agreed foundation launch.",
+      tone: "included",
+    },
+    {
+      label: "Retainer item",
+      copy: "This is keep-it-running support after the launch foundation is in place.",
+      tone: "retainer",
+    },
+    {
+      label: "Parked for later phase",
+      copy: "This is valuable growth work, held for a future phase so Phase 1 stays clean.",
+      tone: "future",
+    },
+    {
+      label: "Separate Quote Required",
+      copy: "This needs its own brief, timeline, and commercial approval before it starts.",
+      tone: "separate",
+    },
+  ];
+
   return (
     <>
       <SectionHeader
         eyebrow="Scope Protection"
-        title="Friendly Boundaries"
-        copy="The tracker keeps Phase 1 focused on setup while making future opportunities visible without blurring the commercial boundary."
+        title="Client-Friendly Boundaries"
+        copy="The tracker keeps Phase 1 focused on setup while still giving future opportunities a clear and respectful place to live."
       />
+      <div className="mb-5 panel overflow-hidden">
+        <div className="grid gap-0 lg:grid-cols-[0.9fr_1.1fr]">
+          <div className="bg-navy p-6 text-white">
+            <p className="eyebrow text-gold">Working Agreement</p>
+            <h3 className="mt-2 text-2xl font-black">Foundation first, systems later.</h3>
+            <p className="mt-3 text-sm leading-6 text-slate-300">
+              Phase 1 is intentionally narrow: setup, presentation, and handover readiness. That clarity protects delivery quality and makes future phases easier to price and plan.
+            </p>
+          </div>
+          <div className="grid gap-3 p-5 sm:grid-cols-2">
+            {boundaryMessages.map((message) => (
+              <div key={message.label} className="rounded-md border border-slate-200 bg-slate-50 p-4">
+                <Badge className={cx("border-transparent", message.tone === "included" ? "bg-gold/10 text-[#795000]" : message.tone === "retainer" ? "bg-blue-50 text-blue-700" : message.tone === "future" ? "bg-olive/10 text-[#4c5616]" : "bg-zinc-100 text-zinc-700")}>{message.label}</Badge>
+                <p className="mt-3 text-sm leading-6 text-slate-600">{message.copy}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
       <div className="grid gap-5 lg:grid-cols-2">
         {scopeItems.map((group) => (
           <ItemGroup key={group.label} title={group.label} items={group.items} tone={group.tone} />
         ))}
       </div>
-      <div className="mt-5 panel overflow-hidden">
-        <div className="bg-navy p-5 text-white">
-          <p className="eyebrow text-gold">Boundary language</p>
-          <h3 className="mt-1 text-xl font-black">Phase 1 builds the foundation.</h3>
-        </div>
-        <div className="grid gap-3 p-5 md:grid-cols-4">
-          {["Retainer item", "Parked for later phase", "Out of Current Scope", "Separate Quote Required"].map((label) => (
-            <div key={label} className="rounded-md border border-slate-200 bg-slate-50 p-4 text-sm font-black text-navy">{label}</div>
-          ))}
-        </div>
-      </div>
     </>
+  );
+}
+
+function EmptyState({ icon: Icon, title, copy, compact = false }) {
+  return (
+    <div className={cx("rounded-lg border border-dashed border-slate-300 bg-slate-50 text-center", compact ? "p-5" : "p-8")}>
+      <span className="mx-auto flex h-11 w-11 items-center justify-center rounded-full bg-white text-gold shadow-lift">
+        <Icon size={20} />
+      </span>
+      <p className="mt-3 font-black text-navy">{title}</p>
+      <p className="mt-1 text-sm leading-6 text-slate-600">{copy}</p>
+    </div>
   );
 }
 
