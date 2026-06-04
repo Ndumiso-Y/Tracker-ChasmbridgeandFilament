@@ -35,3 +35,113 @@ select {
     @apply inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-bold;
   }
 }
+
+/* Custom inline select overrides */
+select.inline-select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  background-color: transparent;
+  border: none;
+  outline: none;
+  padding: 0.25rem;
+  margin: 0;
+  cursor: pointer;
+  text-align-last: center;
+}
+select.inline-select:hover {
+  text-decoration: underline;
+}
+
+/* Custom inline input overrides */
+input.inline-input {
+  background-color: transparent;
+  border: none;
+  outline: none;
+  padding: 0.25rem;
+  margin: 0;
+  width: 100%;
+  text-align: center;
+}
+input.inline-input:hover {
+  background-color: rgba(0, 0, 0, 0.03);
+  border-radius: 4px;
+}
+input.inline-input:focus {
+  background-color: #ffffff;
+  box-shadow: 0 0 0 2px rgba(212, 175, 55, 0.3);
+  border-radius: 4px;
+}
+
+/* Custom scrollbar style for activity history and overflow elements */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: #f1f5f9;
+  border-radius: 4px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Timeline vertical line layout */
+.timeline {
+  position: relative;
+  padding-left: 1.25rem;
+}
+.timeline::before {
+  content: '';
+  position: absolute;
+  left: 5px;
+  top: 8px;
+  bottom: 8px;
+  width: 2px;
+  background-color: #cbd5e1;
+}
+.timeline-dot {
+  position: absolute;
+  left: 1px;
+  top: 6px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background-color: #e2a421;
+  border: 2px solid #ffffff;
+  box-shadow: 0 0 0 2px rgba(226, 164, 33, 0.2);
+}
+
+/* Modal Animations */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes scaleUp {
+  from { transform: scale(0.96); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+.animate-fadeIn {
+  animation: fadeIn 0.2s ease-out forwards;
+}
+
+.animate-scaleUp {
+  animation: scaleUp 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Sticky Column Shadow styling */
+.sticky-column-shadow {
+  box-shadow: 3px 0 6px -3px rgba(0, 29, 63, 0.18);
+}
+.sticky-header-shadow {
+  box-shadow: 3px 0 6px -3px rgba(0, 0, 0, 0.3);
+}
+
+
+
