@@ -619,13 +619,13 @@ function App() {
         )}
       >
         <div className="flex h-full flex-col">
-          <div className="border-b border-white/10 p-5">
-            <div className="overflow-hidden rounded-lg border border-white/10 bg-white/5">
+          <div className="border-b border-white/10 p-5 sidebar-header">
+            <div className="overflow-hidden rounded-lg border border-white/10 bg-white/5 sidebar-image-wrapper">
               <img src={inspiration} alt="Filament (Pty) Ltd and Chasm Bridge Charity visual inspiration" className="h-24 w-full object-cover" />
             </div>
-            <p className="mt-4 text-xs font-bold uppercase tracking-[0.18em] text-gold">Embark Digitals</p>
+            <p className="mt-4 text-xs font-bold uppercase tracking-[0.18em] text-gold sidebar-eyebrow">Embark Digitals</p>
             <h1 className="mt-1 text-xl font-black leading-tight">Chasm Bridge Charity & Filament (Pty) Ltd Command Center</h1>
-            <p className="mt-3 text-sm leading-6 text-slate-300">
+            <p className="mt-3 text-sm leading-6 text-slate-300 sidebar-desc">
               Phase 1 builds the foundation. The retainer keeps it running. Future phases turn it into a scalable system.
             </p>
           </div>
@@ -654,8 +654,8 @@ function App() {
             })}
           </nav>
 
-          <div className="border-t border-white/10 p-4 text-xs leading-5 text-slate-300 space-y-3">
-            <div>
+          <div className="border-t border-white/10 p-4 text-xs leading-5 text-slate-300 space-y-3 sidebar-footer">
+            <div className="sidebar-fee-info">
               <p className="font-bold text-white">Phase 1 Fee: R23,000</p>
               <p>Owner: Ndumiso Yedwa, Embark Digitals</p>
             </div>

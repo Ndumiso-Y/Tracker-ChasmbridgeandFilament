@@ -143,5 +143,40 @@ input.inline-input:focus {
   box-shadow: 3px 0 6px -3px rgba(0, 0, 0, 0.3);
 }
 
+/* Sidebar vertical responsiveness for short screen heights */
+@media (max-height: 820px) {
+  .sidebar-image-wrapper {
+    display: none !important;
+  }
+  .sidebar-desc {
+    display: none !important;
+  }
+  .sidebar-header {
+    padding: 1rem !important;
+  }
+  .sidebar-header h1 {
+    font-size: 0.95rem !important;
+    line-height: 1.25 !important;
+  }
+  .sidebar-fee-info {
+    display: none !important;
+  }
+  .sidebar-footer {
+    padding: 0.75rem !important;
+  }
+}
+@media (max-height: 600px) {
+  .sidebar-header {
+    padding: 0.75rem !important;
+  }
+  .sidebar-header h1 {
+    font-size: 0.85rem !important;
+  }
+  .sidebar-header p.sidebar-eyebrow {
+    margin-top: 0.25rem !important;
+    font-size: 9px !important;
+  }
+}
+
 
 
