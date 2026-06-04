@@ -90,9 +90,8 @@ export function ClientAssets({
               )}
               {isAdmin && onUpdateAsset ? (
                 <input
-                  type="text"
+                  type="date"
                   value={asset.dueDate || ""}
-                  placeholder="YYYY-MM-DD"
                   onChange={(e) => handleDueDateChange(asset, e.target.value, e)}
                   className="inline-input text-slate-700 font-bold text-xs text-left w-28 focus:ring-0 focus:bg-white border-b border-dashed border-slate-300 hover:border-gold"
                 />

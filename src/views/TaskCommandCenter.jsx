@@ -155,13 +155,29 @@ export function TaskCommandCenter({
                         <StatusBadge status={task.status} />
                       )}
                     </td>
-                    <td className="px-4 py-4"><Badge className={priorityStyles[task.priority]}>{task.priority}</Badge></td>
+                    <td className="px-4 py-4 font-bold text-xs">
+                      {isAdmin && onUpdateTask ? (
+                        <select
+                          value={task.priority}
+                          onChange={(e) => onUpdateTask(task.id, { priority: e.target.value })}
+                          className={cx(
+                            "pill cursor-pointer border outline-none font-bold text-[10px] rounded-full px-2 py-0.5 appearance-none text-center inline-select",
+                            priorityStyles[task.priority] || priorityStyles["Medium"]
+                          )}
+                        >
+                          {priorities.map((p) => (
+                            <option key={p} value={p} className="bg-white text-navy font-normal text-xs">{p}</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <Badge className={priorityStyles[task.priority]}>{task.priority}</Badge>
+                      )}
+                    </td>
                     <td className="px-4 py-3">
                       {isAdmin && onUpdateTask ? (
                         <input
-                          type="text"
+                          type="date"
                           value={task.dueDate || ""}
-                          placeholder="YYYY-MM-DD"
                           onChange={(e) => handleDueDateChange(task, e.target.value, e)}
                           className="inline-input text-slate-700 font-bold text-xs text-center w-full focus:ring-0 focus:bg-white border-b border-dashed border-slate-300 hover:border-gold"
                         />
@@ -327,7 +343,22 @@ function TaskCard({
             ) : (
               <StatusBadge status={task.status} />
             )}
-            <Badge className={priorityStyles[task.priority]}>{task.priority}</Badge>
+            {isAdmin && onUpdateTask ? (
+              <select
+                value={task.priority}
+                onChange={(e) => onUpdateTask(task.id, { priority: e.target.value })}
+                className={cx(
+                  "pill cursor-pointer border outline-none font-bold text-[10px] rounded-full px-2 py-0.5 appearance-none text-center inline-select",
+                  priorityStyles[task.priority] || priorityStyles["Medium"]
+                )}
+              >
+                {priorities.map((p) => (
+                  <option key={p} value={p} className="bg-white text-navy font-normal text-xs">{p}</option>
+                ))}
+              </select>
+            ) : (
+              <Badge className={priorityStyles[task.priority]}>{task.priority}</Badge>
+            )}
           </div>
         </div>
         <div className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
@@ -336,9 +367,8 @@ function TaskCard({
             value={
               isAdmin && onUpdateTask ? (
                 <input
-                  type="text"
+                  type="date"
                   value={task.dueDate || ""}
-                  placeholder="YYYY-MM-DD"
                   onChange={(e) => handleDueDateChange(task, e.target.value, e)}
                   className="inline-input text-slate-700 font-bold text-xs text-left w-full focus:ring-0 focus:bg-white border-b border-dashed border-slate-300 hover:border-gold"
                 />

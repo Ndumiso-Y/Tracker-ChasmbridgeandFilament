@@ -401,6 +401,51 @@ function App() {
         setDbLaunchItems(prev => prev.map(l => l.id === itemId ? { ...l, ...localFields } : l));
       }
 
+      // Cascade status changes to Launch Readiness checklist items
+      if (updatedFields.status !== undefined) {
+        let launchIdToSync = null;
+        if (itemId === "task-cbc-domain-confirm" || itemId === "asset-domain-confirmation") {
+          launchIdToSync = "launch-domain-confirmed";
+        } else if (itemId === "task-cbc-test-email" || itemId === "task-cbc-email-handover" || itemId === "del-cbc-email") {
+          launchIdToSync = "launch-email-tested";
+        } else if (itemId === "task-cbc-logo-final" || itemId === "del-cbc-logo") {
+          launchIdToSync = "launch-logo-approved";
+        } else if (itemId === "task-filament-page" || itemId === "del-filament-page") {
+          launchIdToSync = "launch-filament-page-ready";
+        } else if (itemId === "task-cbc-page" || itemId === "del-cbc-page") {
+          launchIdToSync = "launch-cbc-page-ready";
+        } else if (itemId === "task-social-asset-profile-images") {
+          launchIdToSync = "launch-social-images-ready";
+        } else if (itemId === "task-social-asset-banners") {
+          launchIdToSync = "launch-social-banners-ready";
+        } else if (itemId === "task-social-asset-bios") {
+          launchIdToSync = "launch-social-bios-ready";
+        } else if (itemId === "asset-recruitment-criteria") {
+          launchIdToSync = "launch-recruitment-criteria-confirmed";
+        } else if (itemId === "task-cbc-jazmin-access" || itemId === "asset-jazmin-role") {
+          launchIdToSync = "launch-jazmin-role-confirmed";
+        } else if (itemId === "del-social-setup" || itemId.startsWith("task-social-")) {
+          launchIdToSync = "launch-social-secured";
+        }
+
+        if (launchIdToSync) {
+          supabase
+            .from("tracker_items")
+            .update({
+              status: updatedFields.status,
+              updated_at: new Date().toISOString(),
+              last_changed_by: authorLabel,
+              last_changed_at: new Date().toISOString()
+            })
+            .eq("id", launchIdToSync)
+            .then(({ error }) => {
+              if (error) console.error("Cascade status sync failed:", error.message);
+            });
+
+          setDbLaunchItems(prev => prev.map(l => l.id === launchIdToSync ? { ...l, status: updatedFields.status } : l));
+        }
+      }
+
       // Construct tracker_item_notes entry
       const notesToInsert = [];
 
