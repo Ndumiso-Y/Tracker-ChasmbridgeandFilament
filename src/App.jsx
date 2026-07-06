@@ -142,7 +142,15 @@ function App() {
 
   const auth = useAuth() || {};
   const { session, profile, isAdmin, isClient, hasAccess, hasProfile, isProfileActive, isLoading } = auth;
-  const userRole = isAdmin ? "admin" : (isClient ? "client_contributor" : "viewer");
+  // Historical internal Command Center behaviour (pre-V4A): the tracker opens
+  // directly with full editing UI, gated only by the Active Editor selector —
+  // no Supabase Auth session was ever required. That default is preserved here
+  // for anyone who is not an authenticated V4A client_contributor. An
+  // authenticated admin also resolves to "admin" via the same fallback.
+  const userRole = isClient ? "client_contributor" : (supabase ? "admin" : null);
+  // Active Editor selection is an internal operational-attribution concept —
+  // it must not be shown to client contributors or to blocked auth states.
+  const showActiveEditor = isAdmin || !session;
 
   // Role-aware navigation groups
   const navGroups = [
@@ -824,7 +832,7 @@ if (isDeliverable && updatedFields.clientInput !== undefined) {
               <p className="text-gold font-bold bg-gold/10 border border-gold/25 rounded p-2 text-[10px] uppercase tracking-wider leading-4">
                 Supabase is not configured. Editing is disabled.
               </p>
-            ) : (
+            ) : showActiveEditor ? (
               <div className="pt-2 border-t border-white/10 space-y-1.5">
                 <label className="block text-[10px] font-black uppercase tracking-wider text-gold">Active Editor *</label>
                 <select
@@ -848,7 +856,7 @@ if (isDeliverable && updatedFields.clientInput !== undefined) {
                   </button>
                 )}
               </div>
-            )}
+            ) : null}
           </div>
         </div>
       </aside>
@@ -887,7 +895,7 @@ if (isDeliverable && updatedFields.clientInput !== undefined) {
             return (
               <>
                 {/* Active Editor banner warning if not selected */}
-                {supabase && !selectedAuthorId && (
+                {showActiveEditor && supabase && !selectedAuthorId && (
                   <div className="mb-4 rounded bg-gold/10 border border-gold/30 p-3 text-xs font-bold text-[#795000]">
                     ⚠️ Please select an <strong>Active Editor</strong> in the sidebar to enable editing.
                   </div>
