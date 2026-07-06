@@ -9,8 +9,10 @@ import {
   Flag,
   Menu,
   X,
+  GraduationCap,
 } from "lucide-react";
 import inspiration from "./assets/FilamentandChasmInspiration.png";
+import { calculatePhase3DeliveryHealth, calculatePhase2Progress } from "./utils/health";
 import { cx } from "./utils/cx";
 import { supabase } from "./lib/supabase";
 import {
@@ -33,16 +35,17 @@ import LaterPhases from "./views/LaterPhases";
 import ClientAssets from "./views/ClientAssets";
 import LaunchReadiness from "./views/LaunchReadiness";
 import ScopeBoundaries from "./views/ScopeBoundaries";
+import GraduatesCohort from "./views/GraduatesCohort";
+import DeliveryBoard from "./views/DeliveryBoard";
 
-const navItems = [
-  { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { id: "tasks", label: "Task Command Center", icon: FolderKanban },
-  { id: "scope", label: "Phase 1 Scope", icon: ShieldCheck },
-  { id: "later", label: "Retainer / Later Phases", icon: Layers3 },
-  { id: "assets", label: "Client Assets", icon: FileStack },
-  { id: "launch", label: "Launch Readiness", icon: Rocket },
-  { id: "boundaries", label: "Scope Boundaries", icon: Flag },
-];
+import { useAuth } from './contexts/AuthContext';
+import Login from './views/Login';
+import ClientInputRequirements from './views/ClientInputRequirements';
+import SupportIssues from './views/SupportIssues';
+import WeeklyDeliveryReview from './views/WeeklyDeliveryReview';
+
+
+
 
 const fallbackAuthors = [
   { id: "ndumiso-embark", display_name: "Ndumiso / Embark Digitals", role_label: "Delivery Owner", organisation_label: "Embark Digitals", is_active: true },
@@ -66,6 +69,20 @@ function mapTaskFromDb(t) {
     priority: t.priority || "Medium",
     dueDate: t.due_date || "",
     entity: t.entity || "Both",
+    deliveryContext: t.delivery_context || null,
+    recordType: t.record_type || "Task",
+    workstream: t.workstream || null,
+    deliveryLane: t.delivery_lane || null,
+    deliveryWeek: t.delivery_week || null,
+    workflowType: t.workflow_type || "General",
+    workflowStage: t.workflow_stage || null,
+    blockedBy: t.blocked_by || null,
+    blockedSince: t.blocked_since || null,
+    scopeTreatment: t.scope_treatment || "Current Delivery",
+    contentPillar: t.content_pillar || null,
+    requiresApproval: t.requires_approval || false,
+    approvalStatus: t.approval_status || "Not Required",
+    cadenceStatus: t.cadence_status || null,
   };
 }
 
@@ -109,7 +126,7 @@ function mapLaunchItemFromDb(l) {
 }
 
 function mapRecordByCategoryId(r) {
-  const isTask = r.id.startsWith("task-") || r.id.startsWith("social-") || r.id.startsWith("later-");
+  const isTask = r.id.startsWith("task-") || r.id.startsWith("social-") || r.id.startsWith("later-") || r.id.startsWith("p2-") || r.id.startsWith("p3-") || r.id.startsWith("risk-") || r.id.startsWith("decision-") || r.id.startsWith("milestone-") || r.id.startsWith("context-") || r.id.startsWith("scope-");
   const isDeliverable = r.id.startsWith("del-");
   const isAsset = r.id.startsWith("asset-");
   const isLaunchItem = r.id.startsWith("launch-");
@@ -123,6 +140,66 @@ function mapRecordByCategoryId(r) {
 
 function App() {
   const [activeView, setActiveView] = useState("dashboard");
+
+  const auth = useAuth() || {};
+  const { session, profile, isAdmin, isClient, hasAccess, isLoading } = auth;
+
+  // Role-aware navigation groups
+  const navGroups = [
+    {
+      title: 'DELIVERY',
+      items: [
+        { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+        { id: 'tasks', label: 'Task Command Center', icon: FolderKanban },
+        { id: 'delivery', label: 'July Delivery Board', icon: FolderKanban },
+      ]
+    },
+    {
+      title: 'CLIENT COLLABORATION',
+      items: [
+        { id: 'client_input', label: 'Client Input & Requirements', icon: FileStack },
+        { id: 'weekly_review', label: 'Weekly Delivery Review', icon: Rocket },
+      ]
+    },
+    {
+      title: 'SUPPORT',
+      items: [
+        { id: 'support', label: 'Support & Issues', icon: ShieldCheck },
+      ]
+    },
+    {
+      title: 'PROGRAMME CONTEXT',
+      items: [
+        ...(isAdmin || !hasAccess ? [{ id: 'graduates', label: 'Graduates & Cohort', icon: GraduationCap, adminOnly: true }] : []),
+        { id: 'scope', label: 'Phase 1 Scope', icon: ShieldCheck },
+        { id: 'launch', label: 'Launch Readiness', icon: Rocket },
+      ]
+    }
+  ];
+
+  if (isAdmin || !hasAccess) {
+    navGroups.push({
+      title: 'ADMIN & SETTINGS',
+      items: [
+        { id: 'later', label: 'Retainer / Later Phases', icon: Layers3 },
+        { id: 'assets', label: 'Client Assets', icon: FileStack },
+        { id: 'boundaries', label: 'Scope Boundaries', icon: Flag },
+      ]
+    });
+  }
+
+  // Filter items if viewer mode (not logged in or no access)
+  const filteredNavGroups = navGroups.map(group => ({
+    ...group,
+    items: group.items.filter(item => {
+      if (item.adminOnly && !isAdmin && hasAccess) return false;
+      return true;
+    })
+  })).filter(group => group.items.length > 0);
+
+  // Flatten for activeIcon logic
+  const navItems = filteredNavGroups.flatMap(g => g.items);
+
   const [mobileOpen, setMobileOpen] = useState(false);
 
   // DB persistent states (initialized to static data)
@@ -184,7 +261,7 @@ function App() {
           const checklistList = [];
 
           itemsData.forEach((item) => {
-            const isTask = item.id.startsWith("task-") || item.id.startsWith("social-") || item.id.startsWith("later-");
+            const isTask = item.id.startsWith("task-") || item.id.startsWith("social-") || item.id.startsWith("later-") || item.id.startsWith("p2-") || item.id.startsWith("p3-") || item.id.startsWith("risk-") || item.id.startsWith("decision-") || item.id.startsWith("milestone-") || item.id.startsWith("context-") || item.id.startsWith("scope-");
             const isDeliverable = item.id.startsWith("del-");
             const isAsset = item.id.startsWith("asset-");
             const isLaunchItem = item.id.startsWith("launch-");
@@ -232,7 +309,7 @@ function App() {
           } else {
             const mapped = mapRecordByCategoryId(newRecord);
             if (mapped) {
-              const isTask = newRecord.id.startsWith("task-") || newRecord.id.startsWith("social-") || newRecord.id.startsWith("later-");
+              const isTask = newRecord.id.startsWith("task-") || newRecord.id.startsWith("social-") || newRecord.id.startsWith("later-") || newRecord.id.startsWith("p2-") || newRecord.id.startsWith("p3-") || newRecord.id.startsWith("risk-") || newRecord.id.startsWith("decision-") || newRecord.id.startsWith("milestone-") || newRecord.id.startsWith("context-") || newRecord.id.startsWith("scope-");
               const isDeliverable = newRecord.id.startsWith("del-");
               const isAsset = newRecord.id.startsWith("asset-");
               const isLaunchItem = newRecord.id.startsWith("launch-");
@@ -299,7 +376,7 @@ function App() {
       return false;
     }
 
-    const isTask = itemId.startsWith("task-") || itemId.startsWith("social-") || itemId.startsWith("later-");
+    const isTask = r.id.startsWith("task-") || r.id.startsWith("social-") || r.id.startsWith("later-") || r.id.startsWith("p2-") || r.id.startsWith("p3-") || r.id.startsWith("risk-") || r.id.startsWith("decision-") || r.id.startsWith("milestone-") || r.id.startsWith("context-") || r.id.startsWith("scope-");
     const isDeliverable = itemId.startsWith("del-");
     const isAsset = itemId.startsWith("asset-");
     const isLaunchItem = itemId.startsWith("launch-");
@@ -355,13 +432,21 @@ function App() {
       last_changed_at: new Date().toISOString()
     };
 
+    
     if (updatedFields.status !== undefined) updateData.status = updatedFields.status;
     if (updatedFields.dueDate !== undefined) updateData.due_date = updatedFields.dueDate || null;
     if (updatedFields.nextAction !== undefined) updateData.next_action = updatedFields.nextAction || null;
     if (updatedFields.priority !== undefined) updateData.priority = updatedFields.priority || null;
     if (updatedFields.responsible !== undefined) updateData.owner_label = updatedFields.responsible || null;
     if (updatedFields.notes !== undefined) updateData.notes = updatedFields.notes || null;
-    if (isDeliverable && updatedFields.clientInput !== undefined) {
+    if (updatedFields.deliveryLane !== undefined) updateData.delivery_lane = updatedFields.deliveryLane || null;
+    if (updatedFields.deliveryContext !== undefined) updateData.delivery_context = updatedFields.deliveryContext || null;
+    if (updatedFields.workflowStage !== undefined) updateData.workflow_stage = updatedFields.workflowStage || null;
+    if (updatedFields.approvalStatus !== undefined) updateData.approval_status = updatedFields.approvalStatus || null;
+    if (updatedFields.cadenceStatus !== undefined) updateData.cadence_status = updatedFields.cadenceStatus || null;
+    if (updatedFields.blockedBy !== undefined) updateData.blocked_by = updatedFields.blockedBy || null;
+    if (updatedFields.blockedSince !== undefined) updateData.blocked_since = updatedFields.blockedSince || null;
+if (isDeliverable && updatedFields.clientInput !== undefined) {
       updateData.next_action = updatedFields.clientInput || null; // clientInput maps to next_action
     }
 
@@ -374,12 +459,20 @@ function App() {
       if (updateErr) throw updateErr;
 
       // Update local state optimistically
+      
       const localFields = {};
       if (updatedFields.status !== undefined) localFields.status = updatedFields.status;
       if (updatedFields.dueDate !== undefined) localFields.dueDate = updatedFields.dueDate;
       if (updatedFields.nextAction !== undefined) localFields.nextAction = updatedFields.nextAction;
       if (updatedFields.notes !== undefined) localFields.notes = updatedFields.notes;
-      if (isDeliverable && updatedFields.clientInput !== undefined) {
+      if (updatedFields.deliveryLane !== undefined) localFields.deliveryLane = updatedFields.deliveryLane;
+      if (updatedFields.deliveryContext !== undefined) localFields.deliveryContext = updatedFields.deliveryContext;
+      if (updatedFields.workflowStage !== undefined) localFields.workflowStage = updatedFields.workflowStage;
+      if (updatedFields.approvalStatus !== undefined) localFields.approvalStatus = updatedFields.approvalStatus;
+      if (updatedFields.cadenceStatus !== undefined) localFields.cadenceStatus = updatedFields.cadenceStatus;
+      if (updatedFields.blockedBy !== undefined) localFields.blockedBy = updatedFields.blockedBy;
+      if (updatedFields.blockedSince !== undefined) localFields.blockedSince = updatedFields.blockedSince;
+if (isDeliverable && updatedFields.clientInput !== undefined) {
         localFields.clientInput = updatedFields.clientInput;
       }
       if (updatedFields.priority !== undefined) {
@@ -571,8 +664,31 @@ function App() {
 
   // 5. Metrics memo
   const metrics = useMemo(() => {
+    // Legacy metrics
     const phaseOne = dbTasks.filter((task) => task.phase === "Phase 1");
     const donePhaseOne = phaseOne.filter((task) => task.status === "Done").length;
+    
+    // Phase 2 + Phase 3 Delivery Metrics
+    const deliveryWindowTasks = dbTasks.filter((t) => t.phase === "Phase 2" || t.phase === "Phase 3");
+    
+    // Days Remaining to 31 July 2026
+    const targetDate = new Date("2026-07-31T23:59:59Z");
+    const today = new Date();
+    const daysRemaining = Math.max(0, Math.ceil((targetDate - today) / (1000 * 60 * 60 * 24)));
+    
+    // Phase 2 Progress
+    const p2Progress = calculatePhase2Progress(dbTasks);
+    
+    // Phase 3 Health
+    const p3Health = calculatePhase3DeliveryHealth(dbTasks, today);
+    
+    // Programme Totals
+    const awaitingApproval = deliveryWindowTasks.filter(t => t.approvalStatus === "Awaiting Approval" || t.deliveryLane === "Awaiting Approval").length;
+    const blocked = deliveryWindowTasks.filter(t => t.deliveryLane === "Blocked" || t.status === "Blocked").length;
+    const overdue = deliveryWindowTasks.filter(t => t.dueDate && new Date(t.dueDate) < today && t.status !== "Done").length;
+    const dueThisWeek = deliveryWindowTasks.filter(t => t.deliveryLane === "This Week").length;
+    const completed = deliveryWindowTasks.filter(t => t.deliveryLane === "Completed" || t.status === "Done").length;
+
     return {
       total: dbTasks.length,
       done: dbTasks.filter((task) => task.status === "Done").length,
@@ -582,8 +698,20 @@ function App() {
       high: dbTasks.filter((task) => task.priority === "High").length,
       dueSoon: dbTasks.filter((task) => task.dueDate && task.status !== "Done").length,
       phaseProgress: phaseOne.length ? Math.round((donePhaseOne / phaseOne.length) * 100) : 0,
+      
+      // New Delivery Window metrics
+      daysRemaining,
+      p2Progress,
+      p3Health,
+      awaitingApproval,
+      deliveryBlocked: blocked,
+      overdue,
+      dueThisWeek,
+      deliveryCompleted: completed,
     };
   }, [dbTasks]);
+
+
 
   const ActiveIcon = navItems.find((item) => item.id === activeView)?.icon ?? LayoutDashboard;
 
@@ -626,33 +754,40 @@ function App() {
             <p className="mt-4 text-xs font-bold uppercase tracking-[0.18em] text-gold sidebar-eyebrow">Embark Digitals</p>
             <h1 className="mt-1 text-xl font-black leading-tight">Chasm Bridge Charity & Filament (Pty) Ltd Command Center</h1>
             <p className="mt-3 text-sm leading-6 text-slate-300 sidebar-desc">
-              Phase 1 builds the foundation. The retainer keeps it running. Future phases turn it into a scalable system.
+              Currently in Package 3 Review. Phase 2 & Phase 3 delivery window runs until 31 July 2026. Phase 1 provides historical context.
             </p>
           </div>
 
-          <nav className="flex-1 space-y-1 overflow-y-auto p-3">
-            {navItems.map((item) => {
-              const Icon = item.icon;
-              const active = activeView === item.id;
-              return (
-                <button
-                  key={item.id}
-                  onClick={() => {
-                    setActiveView(item.id);
-                    setMobileOpen(false);
-                  }}
-                  aria-current={active ? "page" : undefined}
-                  className={cx(
-                    "flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left text-sm font-bold transition",
-                    active ? "bg-gold text-navy" : "text-slate-200 hover:bg-white/10 hover:text-white",
-                  )}
-                >
-                  <Icon size={18} />
-                  {item.label}
-                </button>
-              );
-            })}
+          
+          <nav className="flex-1 space-y-4 overflow-y-auto p-3">
+            {filteredNavGroups.map((group, idx) => (
+              <div key={idx} className="space-y-1">
+                <p className="px-3 text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">{group.title}</p>
+                {group.items.map((item) => {
+                  const Icon = item.icon;
+                  const active = activeView === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      onClick={() => {
+                        setActiveView(item.id);
+                        setMobileOpen(false);
+                      }}
+                      aria-current={active ? "page" : undefined}
+                      className={cx(
+                        "flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left text-sm font-bold transition",
+                        active ? "bg-gold text-navy" : "text-slate-200 hover:bg-white/10 hover:text-white",
+                      )}
+                    >
+                      <Icon size={18} />
+                      {item.label}
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
           </nav>
+
 
           <div className="border-t border-white/10 p-4 text-xs leading-5 text-slate-300 space-y-3 sidebar-footer">
             <div className="sidebar-fee-info">
@@ -723,6 +858,17 @@ function App() {
               onSelectAuthor={setSelectedAuthorId}
             />
           )}
+          {activeView === "delivery" && (
+            <DeliveryBoard
+              tasks={dbTasks}
+              notes={dbNotes}
+              userRole={userRole}
+              onUpdateTask={handleInlineUpdate}
+              selectedAuthorId={selectedAuthorId}
+              authors={dbAuthors}
+              onSelectAuthor={setSelectedAuthorId}
+            />
+          )}
           {activeView === "scope" && (
             <PhaseScope
               phaseDeliverables={dbDeliverables}
@@ -762,6 +908,18 @@ function App() {
           {activeView === "boundaries" && (
             <ScopeBoundaries
               scopeItems={dbScopeItems}
+            />
+          )}
+          
+          {activeView === "client_input" && <ClientInputRequirements />}
+          {activeView === "weekly_review" && <WeeklyDeliveryReview />}
+          {activeView === "support" && <SupportIssues />}
+{activeView === "graduates" && (
+            <GraduatesCohort
+              userRole={userRole}
+              selectedAuthorId={selectedAuthorId}
+              authors={dbAuthors}
+              onSelectAuthor={setSelectedAuthorId}
             />
           )}
         </div>

@@ -7,10 +7,13 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "validate": "node scripts/validate-data.mjs",
-    "prebuild": "npm run validate",
+    "validate:cohort": "node scripts/validate-cohort-data.mjs",
+    "validate:delivery": "node scripts/validate-delivery-data.mjs",
+    "prebuild": "npm run validate && npm run validate:cohort && npm run validate:delivery && npm run validate:collaboration",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "deploy": "npm run build && gh-pages -d dist"
+    "deploy": "npm run build && gh-pages -d dist",
+    "validate:collaboration": "node scripts/validate_collaboration.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.107.0",

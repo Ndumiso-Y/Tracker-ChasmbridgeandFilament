@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect, Fragment } from "react";
-import { Search, Filter, Target, ChevronDown, Edit2, X } from "lucide-react";
+import { Search, Filter, Target, ChevronDown, Edit2, X, SlidersHorizontal, AlertCircle, CheckCircle } from "lucide-react";
 import {
   tasks as staticTasks,
   phases,
@@ -23,18 +23,38 @@ export function TaskCommandCenter({
   authors = [],
   onSelectAuthor = null
 }) {
-  const [filters, setFilters] = useState({ phase: "All", category: "All", status: "All", priority: "All", responsible: "All" });
+  const [filters, setFilters] = useState({ 
+    phase: "All", category: "All", status: "All", priority: "All", responsible: "All",
+    recordType: "All", approvalStatus: "All", deliveryLane: "All", deliveryWeek: "All", 
+    deliveryContext: "All", scopeTreatment: "All"
+  });
   const [query, setQuery] = useState("");
   const [activeNotesTaskId, setActiveNotesTaskId] = useState(null);
+  
+  // New Delivery Filter States
+  const [currentDeliveryOnly, setCurrentDeliveryOnly] = useState(true);
+  const [showMoreFilters, setShowMoreFilters] = useState(false);
 
   const filteredTasks = useMemo(() => {
     const text = query.trim().toLowerCase();
     return tasks.filter((task) => {
-      const matchesFilters = Object.entries(filters).every(([key, value]) => value === "All" || task[key] === value);
+      // 1. Current Delivery Override
+      if (currentDeliveryOnly && task.phase === "Phase 1") return false;
+      if (currentDeliveryOnly && task.phase === "Separate Scope") return false;
+      
+      // 2. Standard Filters
+      const matchesFilters = Object.entries(filters).every(([key, value]) => {
+        if (value === "All") return true;
+        // Check exact match for the key in task object
+        return task[key] === value;
+      });
+      
+      // 3. Search text
       const haystack = [task.task, task.notes, task.clientInput, task.nextAction].join(" ").toLowerCase();
+      
       return matchesFilters && (!text || haystack.includes(text));
     });
-  }, [filters, query, tasks]);
+  }, [filters, query, tasks, currentDeliveryOnly]);
 
   const isAdmin = userRole === "admin";
 
@@ -59,30 +79,71 @@ export function TaskCommandCenter({
     }
   };
 
+  // Hardcode options for new taxonomy dropdowns since they are validated in scripts
+  const recordTypes = ["Task", "Deliverable", "Recurring Activity", "Approval Gate", "Milestone", "Risk", "Decision", "Context"];
+  const approvalStatuses = ["Not Required", "Drafting", "Ready for Review", "Awaiting Approval", "Changes Requested", "Approved", "Superseded"];
+  const deliveryLanes = ["Now", "This Week", "Next", "Awaiting Approval", "Blocked", "Completed"];
+  const deliveryWeeks = ["Week 1: Stabilise & Confirm", "Week 2: Organise & Publish", "Week 3: Build Credibility", "Week 4: Review & Recommend", "Cross-Period / Recurring"];
+  const deliveryContextsArray = ["Package 3 Review", "Historical Foundation", "Future / Separate Scope", "Phase Delivery"];
+  const scopeTreatments = ["Current Delivery", "Current Delivery if Minor", "Requires Client Approval", "Separate Cost Likely", "Third-Party Cost", "Separate Scope", "Future Context Only"];
+
   return (
     <>
       <SectionHeader
         eyebrow="Tracker"
-        title="Task Command Center"
-        copy="Filter the rollout by phase, category, status, priority, and owner. Live database updates sync in real-time."
+        title="Master Delivery Register"
+        copy="The complete command center for all items. Filters apply instantly. Use the 'Current Delivery' toggle to focus only on Phase 2 & Phase 3."
       />
 
       <div className="panel p-4">
-        <div className="grid gap-3 grid-cols-1 md:grid-cols-3 xl:grid-cols-[1.2fr_repeat(5,1fr)]">
-          <label className="relative block">
-            <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={17} />
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search tasks, notes, input, next action"
-              className="h-11 w-full rounded-md border border-slate-200 bg-white pl-10 pr-3 text-sm outline-none ring-gold/30 focus:border-gold focus:ring-4"
-            />
-          </label>
-          <FilterSelect label="Phase" value={filters.phase} options={phases} onChange={(value) => setFilters((prev) => ({ ...prev, phase: value }))} />
-          <FilterSelect label="Category" value={filters.category} options={categories} onChange={(value) => setFilters((prev) => ({ ...prev, category: value }))} />
-          <FilterSelect label="Status" value={filters.status} options={statuses} onChange={(value) => setFilters((prev) => ({ ...prev, status: value }))} />
-          <FilterSelect label="Priority" value={filters.priority} options={priorities} onChange={(value) => setFilters((prev) => ({ ...prev, priority: value }))} />
-          <FilterSelect label="Owner" value={filters.responsible} options={teamMembers} onChange={(value) => setFilters((prev) => ({ ...prev, responsible: value }))} />
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="relative flex-1 min-w-[200px]">
+              <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={17} />
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search tasks, notes, input, next action"
+                className="h-11 w-full rounded-md border border-slate-200 bg-white pl-10 pr-3 text-sm outline-none ring-gold/30 focus:border-gold focus:ring-4"
+              />
+            </label>
+            <label className="flex items-center gap-2 text-sm font-bold text-navy bg-gold/10 px-3 py-2.5 rounded-md border border-gold/30 cursor-pointer">
+              <input 
+                type="checkbox" 
+                checked={currentDeliveryOnly} 
+                onChange={(e) => setCurrentDeliveryOnly(e.target.checked)}
+                className="w-4 h-4 text-gold rounded border-slate-300 focus:ring-gold"
+              />
+              Active Delivery Window Only
+            </label>
+            <button
+              onClick={() => setShowMoreFilters(!showMoreFilters)}
+              className={cx(
+                "flex items-center gap-2 text-sm font-bold px-4 py-2.5 rounded-md border transition",
+                showMoreFilters ? "bg-navy text-white border-navy" : "bg-white text-slate-600 border-slate-200 hover:border-gold"
+              )}
+            >
+              <SlidersHorizontal size={16} />
+              Filters
+            </button>
+          </div>
+
+          {showMoreFilters && (
+            <div className="grid gap-3 grid-cols-1 md:grid-cols-4 pt-3 border-t border-slate-100 animate-fadeIn">
+              <FilterSelect label="Phase" value={filters.phase} options={phases} onChange={(value) => setFilters((prev) => ({ ...prev, phase: value }))} />
+              <FilterSelect label="Category" value={filters.category} options={categories} onChange={(value) => setFilters((prev) => ({ ...prev, category: value }))} />
+              <FilterSelect label="Status" value={filters.status} options={statuses} onChange={(value) => setFilters((prev) => ({ ...prev, status: value }))} />
+              <FilterSelect label="Priority" value={filters.priority} options={priorities} onChange={(value) => setFilters((prev) => ({ ...prev, priority: value }))} />
+              <FilterSelect label="Owner" value={filters.responsible} options={teamMembers} onChange={(value) => setFilters((prev) => ({ ...prev, responsible: value }))} />
+              
+              <FilterSelect label="Record Type" value={filters.recordType} options={recordTypes} onChange={(value) => setFilters((prev) => ({ ...prev, recordType: value }))} />
+              <FilterSelect label="Approval Status" value={filters.approvalStatus} options={approvalStatuses} onChange={(value) => setFilters((prev) => ({ ...prev, approvalStatus: value }))} />
+              <FilterSelect label="Delivery Lane" value={filters.deliveryLane} options={deliveryLanes} onChange={(value) => setFilters((prev) => ({ ...prev, deliveryLane: value }))} />
+              <FilterSelect label="Delivery Week" value={filters.deliveryWeek} options={deliveryWeeks} onChange={(value) => setFilters((prev) => ({ ...prev, deliveryWeek: value }))} />
+              <FilterSelect label="Delivery Context" value={filters.deliveryContext} options={deliveryContextsArray} onChange={(value) => setFilters((prev) => ({ ...prev, deliveryContext: value }))} />
+              <FilterSelect label="Scope Treatment" value={filters.scopeTreatment} options={scopeTreatments} onChange={(value) => setFilters((prev) => ({ ...prev, scopeTreatment: value }))} />
+            </div>
+          )}
         </div>
       </div>
 
@@ -102,16 +163,14 @@ export function TaskCommandCenter({
           <table className="w-full min-w-[1300px] table-fixed border-collapse text-left text-sm">
             <thead className="bg-navy text-white">
               <tr>
-                <th className="px-4 py-3 text-xs font-black uppercase tracking-[0.08em] w-[14%] sticky top-0 left-0 bg-navy z-30 sticky-header-shadow">Task</th>
-                <th className="px-4 py-3 text-xs font-black uppercase tracking-[0.08em] w-[8%] sticky top-0 bg-navy z-20">Category</th>
+                <th className="px-4 py-3 text-xs font-black uppercase tracking-[0.08em] w-[18%] sticky top-0 left-0 bg-navy z-30 sticky-header-shadow">Task & Indicators</th>
                 <th className="px-4 py-3 text-xs font-black uppercase tracking-[0.08em] w-[7%] sticky top-0 bg-navy z-20">Phase</th>
-                <th className="px-4 py-3 text-xs font-black uppercase tracking-[0.08em] w-[12%] sticky top-0 bg-navy z-20">Responsible Party</th>
+                <th className="px-4 py-3 text-xs font-black uppercase tracking-[0.08em] w-[11%] sticky top-0 bg-navy z-20">Responsible Party</th>
                 <th className="px-4 py-3 text-xs font-black uppercase tracking-[0.08em] w-[9%] sticky top-0 bg-navy z-20">Status</th>
-                <th className="px-4 py-3 text-xs font-black uppercase tracking-[0.08em] w-[6%] sticky top-0 bg-navy z-20">Priority</th>
-                <th className="px-4 py-3 text-xs font-black uppercase tracking-[0.08em] w-[9%] sticky top-0 bg-navy z-20">Due Date</th>
-                <th className="px-4 py-3 text-xs font-black uppercase tracking-[0.08em] w-[11%] sticky top-0 bg-navy z-20">Client Input Needed</th>
+                <th className="px-4 py-3 text-xs font-black uppercase tracking-[0.08em] w-[8%] sticky top-0 bg-navy z-20">Due Date</th>
+                <th className="px-4 py-3 text-xs font-black uppercase tracking-[0.08em] w-[12%] sticky top-0 bg-navy z-20">Client Input / Blockers</th>
                 <th className="px-4 py-3 text-xs font-black uppercase tracking-[0.08em] w-[14%] sticky top-0 bg-navy z-20">Notes / History</th>
-                <th className="px-4 py-3 text-xs font-black uppercase tracking-[0.08em] w-[10%] sticky top-0 bg-navy z-20">Next Action</th>
+                <th className="px-4 py-3 text-xs font-black uppercase tracking-[0.08em] w-[12%] sticky top-0 bg-navy z-20">Next Action</th>
               </tr>
             </thead>
             <tbody>
@@ -119,8 +178,24 @@ export function TaskCommandCenter({
                 const historyCount = notes.filter(n => n.tracker_item_id === task.id).length;
                 return (
                   <tr key={task.id} className="border-b border-slate-100 align-top hover:bg-slate-50 transition-colors group">
-                    <td className="px-4 py-4 font-black leading-5 text-navy sticky left-0 bg-white group-hover:bg-slate-50 z-10 border-r border-slate-150 sticky-column-shadow">{task.task}</td>
-                    <td className="px-4 py-4 text-slate-600">{task.category}</td>
+                    <td className="px-4 py-4 sticky left-0 bg-white group-hover:bg-slate-50 z-10 border-r border-slate-150 sticky-column-shadow">
+                      <p className="font-black leading-5 text-navy">{task.task}</p>
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {task.recordType && task.recordType !== "Task" && (
+                          <Badge className="bg-slate-200 text-slate-700 text-[9px] border-slate-300">{task.recordType}</Badge>
+                        )}
+                        {task.approvalStatus && task.approvalStatus !== "Not Required" && (
+                          <Badge className={cx("text-[9px]", task.approvalStatus === "Approved" ? "bg-emerald-100 border-emerald-300 text-emerald-800" : "bg-purple-100 border-purple-300 text-purple-800")}>
+                            {task.approvalStatus}
+                          </Badge>
+                        )}
+                        {task.cadenceStatus && (
+                          <Badge className={cx("text-[9px]", task.cadenceStatus === "On Track" ? "bg-emerald-100 border-emerald-300 text-emerald-800" : task.cadenceStatus === "Behind" ? "bg-red-100 border-red-300 text-red-800" : "bg-amber-100 border-amber-300 text-amber-800")}>
+                            {task.cadenceStatus}
+                          </Badge>
+                        )}
+                      </div>
+                    </td>
                     <td className="px-4 py-4"><PhaseBadge phase={task.phase} /></td>
                     <td className="px-4 py-3">
                       {isAdmin && onUpdateTask ? (
@@ -155,24 +230,6 @@ export function TaskCommandCenter({
                         <StatusBadge status={task.status} />
                       )}
                     </td>
-                    <td className="px-4 py-4 font-bold text-xs">
-                      {isAdmin && onUpdateTask ? (
-                        <select
-                          value={task.priority}
-                          onChange={(e) => onUpdateTask(task.id, { priority: e.target.value })}
-                          className={cx(
-                            "pill cursor-pointer border outline-none font-bold text-[10px] rounded-full px-2 py-0.5 appearance-none text-center inline-select",
-                            priorityStyles[task.priority] || priorityStyles["Medium"]
-                          )}
-                        >
-                          {priorities.map((p) => (
-                            <option key={p} value={p} className="bg-white text-navy font-normal text-xs">{p}</option>
-                          ))}
-                        </select>
-                      ) : (
-                        <Badge className={priorityStyles[task.priority]}>{task.priority}</Badge>
-                      )}
-                    </td>
                     <td className="px-4 py-3">
                       {isAdmin && onUpdateTask ? (
                         <input
@@ -185,7 +242,15 @@ export function TaskCommandCenter({
                         task.dueDate || "Parked"
                       )}
                     </td>
-                    <td className="px-4 py-4 leading-5 text-slate-650">{task.clientInput}</td>
+                    <td className="px-4 py-4 leading-5 text-slate-650">
+                      {task.clientInput}
+                      {task.blockedBy && (
+                        <div className="mt-2 text-xs font-bold text-red-700 bg-red-50 border border-red-200 rounded p-1.5 flex items-start gap-1">
+                          <AlertCircle size={12} className="mt-0.5 shrink-0" />
+                          <span>Blocked By: {task.blockedBy}</span>
+                        </div>
+                      )}
+                    </td>
                     <td className="px-4 py-3 leading-5 text-slate-600 select-none">
                       <div className="flex flex-col gap-1.5 items-start">
                         <div className="text-xs font-semibold text-slate-700 line-clamp-2" title={task.notes || "No notes yet"}>
@@ -195,12 +260,12 @@ export function TaskCommandCenter({
                           onClick={(e) => { e.stopPropagation(); setActiveNotesTaskId(task.id); }}
                           className={cx(
                             "text-[10px] font-bold px-2 py-0.5 rounded flex items-center gap-1 transition-all border",
-                            task.notes
+                            task.notes || historyCount > 0
                               ? "bg-gold/10 border-gold/20 text-[#795000] hover:bg-gold/25"
                               : "border-dashed border-slate-300 text-slate-400 hover:border-gold hover:text-gold"
                           )}
                         >
-                          {task.notes ? `Notes & History (${historyCount})` : "+ Add Note / Edit"}
+                          {task.notes || historyCount > 0 ? `Notes & History (${historyCount})` : "+ Add Note / Edit"}
                         </button>
                       </div>
                     </td>
@@ -307,21 +372,19 @@ function TaskCard({
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <p className="text-lg font-black text-navy">{task.task}</p>
-            <div className="mt-1 text-sm text-slate-500 flex items-center gap-1.5">
-              <span>{task.category}</span>
-              <span>/</span>
-              {isAdmin && onUpdateTask ? (
-                <select
-                  value={task.responsible}
-                  onChange={(e) => handleResponsibleChange(task, e.target.value, e)}
-                  className="inline-select text-navy font-bold text-xs"
-                >
-                  {teamMembers.map((m) => (
-                    <option key={m} value={m} className="text-navy font-bold">{m}</option>
-                  ))}
-                </select>
-              ) : (
-                <span>{task.responsible}</span>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {task.recordType && task.recordType !== "Task" && (
+                <Badge className="bg-slate-200 text-slate-700 text-[9px] border-slate-300">{task.recordType}</Badge>
+              )}
+              {task.approvalStatus && task.approvalStatus !== "Not Required" && (
+                <Badge className={cx("text-[9px]", task.approvalStatus === "Approved" ? "bg-emerald-100 border-emerald-300 text-emerald-800" : "bg-purple-100 border-purple-300 text-purple-800")}>
+                  {task.approvalStatus}
+                </Badge>
+              )}
+              {task.cadenceStatus && (
+                <Badge className={cx("text-[9px]", task.cadenceStatus === "On Track" ? "bg-emerald-100 border-emerald-300 text-emerald-800" : task.cadenceStatus === "Behind" ? "bg-red-100 border-red-300 text-red-800" : "bg-amber-100 border-amber-300 text-amber-800")}>
+                  {task.cadenceStatus}
+                </Badge>
               )}
             </div>
           </div>
@@ -343,22 +406,6 @@ function TaskCard({
             ) : (
               <StatusBadge status={task.status} />
             )}
-            {isAdmin && onUpdateTask ? (
-              <select
-                value={task.priority}
-                onChange={(e) => onUpdateTask(task.id, { priority: e.target.value })}
-                className={cx(
-                  "pill cursor-pointer border outline-none font-bold text-[10px] rounded-full px-2 py-0.5 appearance-none text-center inline-select",
-                  priorityStyles[task.priority] || priorityStyles["Medium"]
-                )}
-              >
-                {priorities.map((p) => (
-                  <option key={p} value={p} className="bg-white text-navy font-normal text-xs">{p}</option>
-                ))}
-              </select>
-            ) : (
-              <Badge className={priorityStyles[task.priority]}>{task.priority}</Badge>
-            )}
           </div>
         </div>
         <div className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
@@ -377,7 +424,17 @@ function TaskCard({
               )
             }
           />
-          <Info label="Client Input Needed" value={task.clientInput} />
+          <Info label="Client Input Needed" value={
+            <>
+              {task.clientInput}
+              {task.blockedBy && (
+                <div className="mt-2 text-[10px] font-bold text-red-700 bg-red-50 border border-red-200 rounded p-1 flex items-start gap-1 w-fit">
+                  <AlertCircle size={10} className="mt-0.5 shrink-0" />
+                  <span>Blocked By: {task.blockedBy}</span>
+                </div>
+              )}
+            </>
+          } />
           
           <div className="sm:col-span-2 pt-2 border-t border-slate-100">
             <button

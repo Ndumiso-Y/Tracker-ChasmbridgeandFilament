@@ -20,10 +20,9 @@ export const priorityStyles = {
 
 export const phaseStyles = {
   "Phase 1": "border-gold/40 bg-gold/10 text-[#795000]",
-  Retainer: "border-blue-200 bg-blue-50 text-blue-700",
   "Phase 2": "border-olive/40 bg-olive/10 text-[#4c5616]",
   "Phase 3": "border-cyan-200 bg-cyan-50 text-cyan-700",
-  "Out of Scope": "border-zinc-300 bg-zinc-100 text-zinc-700",
+  "Separate Scope": "border-zinc-300 bg-zinc-100 text-zinc-700",
 };
 
 export function Badge({ children, className = "" }) {
@@ -35,14 +34,13 @@ export function StatusBadge({ status }) {
 }
 
 export function PhaseBadge({ phase }) {
-  return <Badge className={phaseStyles[phase] ?? phaseStyles["Out of Scope"]}>{labelPhase(phase)}</Badge>;
+  return <Badge className={phaseStyles[phase] ?? phaseStyles["Separate Scope"]}>{labelPhase(phase)}</Badge>;
 }
 
 export function labelPhase(phase) {
-  if (phase === "Phase 1") return "Phase 1: Setup";
-  if (phase === "Retainer") return "Retainer: Keep It Running";
-  if (phase === "Phase 2") return "Phase 2: Public Growth";
-  if (phase === "Phase 3") return "Phase 3: Systems & Automation";
-  if (phase === "Out of Scope") return "Out of Current Scope";
+  if (phase === "Phase 1") return "Phase 1: Digital Foundation";
+  if (phase === "Phase 2") return "Phase 2: Operating Foundations";
+  if (phase === "Phase 3") return "Phase 3: Active Growth & Management";
+  if (phase === "Separate Scope") return "Separate Scope: Future Systems";
   return phase;
 }

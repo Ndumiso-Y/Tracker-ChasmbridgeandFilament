@@ -42,8 +42,14 @@ export default function SupportIssues() {
   };
 
   const isStale = (ticket) => {
-    if (['Resolved', 'Closed'].includes(ticket.status)) return false;
+    if (['Closed'].includes(ticket.status)) return false;
     return isMoreThanTwoBusinessDaysOld(ticket.updated_at);
+  };
+
+  const isEmbarkDelay = (ticket) => {
+    if (!isStale(ticket)) return false;
+    if (['Waiting on Client', 'Awaiting Client Confirmation', 'Waiting on Third Party', 'Resolved'].includes(ticket.status)) return false;
+    return true;
   };
 
   if (loading && !selectedTicket) {
@@ -168,7 +174,14 @@ export default function SupportIssues() {
                   <h3 className="text-lg font-bold text-white group-hover:text-amber-500 transition-colors flex items-center gap-2">
                     {ticket.title}
                     {isAdmin && isStale(ticket) && (
-                      <span className="text-[10px] uppercase font-bold tracking-wider bg-red-500/20 text-red-400 px-2 py-0.5 rounded border border-red-500/20">Follow-up Required</span>
+                      <span className={cx(
+                        "text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded border",
+                        isEmbarkDelay(ticket) 
+                          ? "bg-red-500/20 text-red-400 border-red-500/20" 
+                          : "bg-amber-500/20 text-amber-500 border-amber-500/20"
+                      )}>
+                        {isEmbarkDelay(ticket) ? 'Embark Overdue' : 'Follow-up Required'}
+                      </span>
                     )}
                   </h3>
                   <div className="flex items-center gap-3 mt-2 text-sm text-slate-400">

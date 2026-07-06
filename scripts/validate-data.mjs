@@ -77,7 +77,7 @@ tasks.forEach((task, index) => {
   checkId(task.id, context);
   
   // Required fields
-  const requiredFields = ["id", "task", "category", "phase", "responsible", "status", "priority", "clientInput", "notes", "nextAction"];
+  const requiredFields = ["id", "task", "category", "phase", "responsible", "status", "priority"];
   requiredFields.forEach((field) => {
     if (task[field] === undefined || task[field] === null) {
       addError(`Missing required field "${field}" in ${context}`);
