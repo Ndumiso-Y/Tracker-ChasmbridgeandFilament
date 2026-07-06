@@ -39,7 +39,6 @@ import GraduatesCohort from "./views/GraduatesCohort";
 import DeliveryBoard from "./views/DeliveryBoard";
 
 import { useAuth } from './contexts/AuthContext';
-import Login from './views/Login';
 import ClientInputRequirements from './views/ClientInputRequirements';
 import SupportIssues from './views/SupportIssues';
 import WeeklyDeliveryReview from './views/WeeklyDeliveryReview';
@@ -142,16 +141,17 @@ function App() {
   const [activeView, setActiveView] = useState("dashboard");
 
   const auth = useAuth() || {};
-  const { session, profile, isAdmin, isClient, hasAccess, isLoading } = auth;
+  const { session, profile, isAdmin, isClient, hasAccess, hasProfile, isProfileActive, isLoading } = auth;
+  const userRole = isAdmin ? "admin" : (isClient ? "client_contributor" : "viewer");
 
   // Role-aware navigation groups
   const navGroups = [
     {
       title: 'DELIVERY',
       items: [
-        { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-        { id: 'tasks', label: 'Task Command Center', icon: FolderKanban },
-        { id: 'delivery', label: 'July Delivery Board', icon: FolderKanban },
+        { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, adminOnly: true },
+        { id: 'tasks', label: 'Task Command Center', icon: FolderKanban, adminOnly: true },
+        { id: 'delivery', label: 'July Delivery Board', icon: FolderKanban, adminOnly: true },
       ]
     },
     {
@@ -170,35 +170,53 @@ function App() {
     {
       title: 'PROGRAMME CONTEXT',
       items: [
-        ...(isAdmin || !hasAccess ? [{ id: 'graduates', label: 'Graduates & Cohort', icon: GraduationCap, adminOnly: true }] : []),
-        { id: 'scope', label: 'Phase 1 Scope', icon: ShieldCheck },
-        { id: 'launch', label: 'Launch Readiness', icon: Rocket },
+        { id: 'graduates', label: 'Graduates & Cohort', icon: GraduationCap, adminOnly: true },
+        { id: 'scope', label: 'Phase 1 Scope', icon: ShieldCheck, adminOnly: true },
+        { id: 'launch', label: 'Launch Readiness', icon: Rocket, adminOnly: true },
+      ]
+    },
+    {
+      title: 'ADMIN & SETTINGS',
+      items: [
+        { id: 'later', label: 'Retainer / Later Phases', icon: Layers3, adminOnly: true },
+        { id: 'assets', label: 'Client Assets', icon: FileStack, adminOnly: true },
+        { id: 'boundaries', label: 'Scope Boundaries', icon: Flag, adminOnly: true },
       ]
     }
   ];
 
-  if (isAdmin || !hasAccess) {
-    navGroups.push({
-      title: 'ADMIN & SETTINGS',
-      items: [
-        { id: 'later', label: 'Retainer / Later Phases', icon: Layers3 },
-        { id: 'assets', label: 'Client Assets', icon: FileStack },
-        { id: 'boundaries', label: 'Scope Boundaries', icon: Flag },
-      ]
-    });
-  }
-
-  // Filter items if viewer mode (not logged in or no access)
+  // Filter items based on access map
   const filteredNavGroups = navGroups.map(group => ({
     ...group,
     items: group.items.filter(item => {
-      if (item.adminOnly && !isAdmin && hasAccess) return false;
+      if (item.adminOnly) {
+        // Hide internal views from active client contributors.
+        // Legacy viewers (!session) continue to see public Command Center.
+        if (isClient && !isAdmin) return false;
+      }
       return true;
     })
   })).filter(group => group.items.length > 0);
 
   // Flatten for activeIcon logic
   const navItems = filteredNavGroups.flatMap(g => g.items);
+
+  // Full (unfiltered) set of admin-only view ids, used to guard direct activeView
+  // activation even when the corresponding nav button is hidden from the sidebar.
+  const adminOnlyViewIds = useMemo(
+    () => new Set(navGroups.flatMap((g) => g.items).filter((i) => i.adminOnly).map((i) => i.id)),
+    [],
+  );
+
+  const isViewBlockedForClient = isClient && !isAdmin && adminOnlyViewIds.has(activeView);
+
+  // Keep activeView state in sync once a client contributor lands on, or is
+  // sitting on, an admin-only view (covers first-load landing and any stale state).
+  useEffect(() => {
+    if (!isLoading && isViewBlockedForClient) {
+      setActiveView("client_input");
+    }
+  }, [isLoading, isViewBlockedForClient]);
 
   const [mobileOpen, setMobileOpen] = useState(false);
 
@@ -219,8 +237,6 @@ function App() {
   // Active Editor state
   const [selectedAuthorId, setSelectedAuthorId] = useState("");
 
-  // Role status (admin by default if Supabase is connected)
-  const [userRole, setUserRole] = useState(supabase ? "admin" : null);
   const [errorNotification, setErrorNotification] = useState(null);
 
   const triggerErrorToast = (msg) => {
@@ -233,7 +249,7 @@ function App() {
   // 1. Initial Load from Supabase & Postgres Realtime changes
   useEffect(() => {
     if (!supabase) {
-      setUserRole(null); // Force read-only viewer mode if Supabase is missing
+      // Force read-only viewer mode if Supabase is missing
       return;
     }
 
@@ -376,7 +392,7 @@ function App() {
       return false;
     }
 
-    const isTask = r.id.startsWith("task-") || r.id.startsWith("social-") || r.id.startsWith("later-") || r.id.startsWith("p2-") || r.id.startsWith("p3-") || r.id.startsWith("risk-") || r.id.startsWith("decision-") || r.id.startsWith("milestone-") || r.id.startsWith("context-") || r.id.startsWith("scope-");
+    const isTask = itemId.startsWith("task-") || itemId.startsWith("social-") || itemId.startsWith("later-") || itemId.startsWith("p2-") || itemId.startsWith("p3-") || itemId.startsWith("risk-") || itemId.startsWith("decision-") || itemId.startsWith("milestone-") || itemId.startsWith("context-") || itemId.startsWith("scope-");
     const isDeliverable = itemId.startsWith("del-");
     const isAsset = itemId.startsWith("asset-");
     const isLaunchItem = itemId.startsWith("launch-");
@@ -715,6 +731,16 @@ if (isDeliverable && updatedFields.clientInput !== undefined) {
 
   const ActiveIcon = navItems.find((item) => item.id === activeView)?.icon ?? LayoutDashboard;
 
+  // Hold the shell until auth state resolves, so an authenticated user never
+  // briefly sees the wrong role's navigation/landing view before redirect.
+  if (isLoading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-mist">
+        <p className="text-xs font-black uppercase tracking-[0.18em] text-navy/50">Loading Command Center…</p>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-mist">
       {/* Toast Error Alert */}
@@ -831,12 +857,41 @@ if (isDeliverable && updatedFields.clientInput !== undefined) {
 
       <main className="pt-20 lg:ml-72 lg:pt-0">
         <div className="mx-auto max-w-7xl px-4 py-6 md:px-8 lg:py-8">
-          {/* Active Editor banner warning if not selected */}
-          {supabase && !selectedAuthorId && (
-            <div className="mb-4 rounded bg-gold/10 border border-gold/30 p-3 text-xs font-bold text-[#795000]">
-              ⚠️ Please select an <strong>Active Editor</strong> in the sidebar to enable editing.
+          {session && !hasAccess && !hasProfile && (
+            <div className="mb-8 flex flex-col items-center justify-center rounded-xl bg-white p-12 text-center shadow-sm">
+              <ShieldCheck size={48} className="mb-4 text-red-500" />
+              <h2 className="mb-2 text-2xl font-bold text-navy">Access Not Authorised</h2>
+              <p className="text-slate-500">Your account has been authenticated, but you do not have an active profile on this system.</p>
             </div>
           )}
+          {session && !hasAccess && hasProfile && !isProfileActive && (
+            <div className="mb-8 flex flex-col items-center justify-center rounded-xl bg-white p-12 text-center shadow-sm">
+              <ShieldCheck size={48} className="mb-4 text-gold" />
+              <h2 className="mb-2 text-2xl font-bold text-navy">Access Inactive</h2>
+              <p className="text-slate-500">Your profile is currently inactive. Please contact the administrator.</p>
+            </div>
+          )}
+          
+          {(() => {
+            // Guard against rendering an admin-only view for a client contributor.
+            // Computed synchronously (not via effect) so the admin component never
+            // renders even for a single frame while activeView state catches up.
+            if (isViewBlockedForClient) {
+              return <ClientInputRequirements />;
+            }
+
+            if (session && !hasAccess) {
+              return null;
+            }
+
+            return (
+              <>
+                {/* Active Editor banner warning if not selected */}
+                {supabase && !selectedAuthorId && (
+                  <div className="mb-4 rounded bg-gold/10 border border-gold/30 p-3 text-xs font-bold text-[#795000]">
+                    ⚠️ Please select an <strong>Active Editor</strong> in the sidebar to enable editing.
+                  </div>
+                )}
 
           {activeView === "dashboard" && (
             <Dashboard
@@ -922,6 +977,9 @@ if (isDeliverable && updatedFields.clientInput !== undefined) {
               onSelectAuthor={setSelectedAuthorId}
             />
           )}
+              </>
+            );
+          })()}
         </div>
       </main>
     </div>

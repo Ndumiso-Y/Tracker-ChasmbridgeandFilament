@@ -10,8 +10,8 @@ INSERT INTO tracker_items (
   category,
   status,
   priority,
-  responsible_party,
-  author,
+  owner_label,
+  last_changed_by,
   delivery_context,
   record_type,
   scope_treatment,
@@ -20,26 +20,36 @@ INSERT INTO tracker_items (
   'decision-tier3-activation',
   'Tier 3 Paid Delivery Scope Activated',
   'Both',
-  'Separate Scope',
+  'Phase 3',
   'Programme Review',
-  'Separate Scope',
+  'Done',
   'High',
   'Embark Digitals',
   'Ndumiso / Embark Digitals',
-  'Future / Separate Scope',
+  'Tier 3 Active Delivery',
   'Decision',
   'Current Delivery',
   false
 ) ON CONFLICT (id) DO UPDATE SET
   title = EXCLUDED.title,
-  record_type = EXCLUDED.record_type;
+  entity = EXCLUDED.entity,
+  phase = EXCLUDED.phase,
+  category = EXCLUDED.category,
+  status = EXCLUDED.status,
+  priority = EXCLUDED.priority,
+  owner_label = EXCLUDED.owner_label,
+  last_changed_by = EXCLUDED.last_changed_by,
+  delivery_context = EXCLUDED.delivery_context,
+  record_type = EXCLUDED.record_type,
+  scope_treatment = EXCLUDED.scope_treatment,
+  requires_approval = EXCLUDED.requires_approval;
 
 -- 2. Insert contextual note for the decision
 INSERT INTO tracker_item_notes (
   tracker_item_id,
   note_type,
-  author,
-  content
+  changed_by_label,
+  note_text
 )
 SELECT 
   'decision-tier3-activation',

@@ -34,15 +34,28 @@ export const AuthProvider = ({ children }) => {
 
     loadSession();
 
+    if (!supabase) {
+      return () => {
+        mounted = false;
+      };
+    }
+
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, newSession) => {
+      if (!mounted) return;
       setSession(newSession);
-      if (newSession?.user) {
-        const userProfile = await collaborationService.getUserProfile(newSession.user.id);
-        setProfile(userProfile);
-      } else {
-        setProfile(null);
+      try {
+        if (newSession?.user) {
+          const userProfile = await collaborationService.getUserProfile(newSession.user.id);
+          if (mounted) setProfile(userProfile);
+        } else {
+          if (mounted) setProfile(null);
+        }
+      } catch (err) {
+        console.error("Auth error:", err);
+        if (mounted) setProfile(null);
+      } finally {
+        if (mounted) setIsLoading(false);
       }
-      setIsLoading(false);
     });
 
     return () => {
@@ -51,13 +64,18 @@ export const AuthProvider = ({ children }) => {
     };
   }, []);
 
+  const hasProfile = !!profile;
+  const isProfileActive = hasProfile && profile.is_active;
+
   const value = {
     session,
     profile,
     isLoading,
-    isAdmin: profile?.role === 'admin' && profile?.is_active,
-    isClient: profile?.role === 'client_contributor' && profile?.is_active,
-    hasAccess: !!profile && profile.is_active,
+    hasProfile,
+    isProfileActive,
+    isAdmin: isProfileActive && profile.role === 'admin',
+    isClient: isProfileActive && profile.role === 'client_contributor',
+    hasAccess: isProfileActive,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

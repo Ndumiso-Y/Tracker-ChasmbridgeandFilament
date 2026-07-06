@@ -8,7 +8,24 @@ export const collaborationService = {
       .select('*')
       .eq('user_id', userId)
       .single();
-    if (error && error.code !== 'PGRST116') throw error; // Ignore not found
+    
+    // Fallback for existing Ndumiso / Embark admin role in user_roles
+    const { data: legacyRole } = await supabase
+      .from('user_roles')
+      .select('role')
+      .eq('user_id', userId)
+      .single();
+      
+    if (legacyRole?.role === 'admin') {
+      return {
+        ...(data || {}),
+        role: 'admin',
+        is_active: true,
+        is_legacy_admin: true
+      };
+    }
+
+    if (error && error.code !== 'PGRST116') throw error;
     return data;
   },
 
@@ -19,7 +36,12 @@ export const collaborationService = {
   },
 
   async sendMagicLink(email) {
-    const { error } = await supabase.auth.signInWithOtp({ email });
+    const { error } = await supabase.auth.signInWithOtp({ 
+      email,
+      options: {
+        emailRedirectTo: window.location.origin + window.location.pathname
+      }
+    });
     if (error) throw error;
   },
 
