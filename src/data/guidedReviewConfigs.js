@@ -1,0 +1,82 @@
+// Guided review structures for the two Filament review templates (V4A.10).
+// These drive the step-based all-pages / all-slides review workflow — ONE
+// client_input_request with many client_input_review_entries rows, keyed by
+// review_item_key. This is display/navigation structure only; every review
+// answer persists to Supabase (client_input_review_entries), never to
+// React state alone.
+
+export const GUIDED_REVIEW_CONFIGS = {
+  'template-filament-profile-review': {
+    reviewItemType: 'Company Profile Page',
+    itemNoun: 'Page',
+    // Pages 17–19 remain excluded: no readable section content was available
+    // in the supplied source document.
+    items: [
+      { key: 'page-1', number: 1, title: 'Cover / Filament Company Profile', group: null },
+      { key: 'page-2', number: 2, title: 'Corporate Snapshot / Company Information', group: null },
+      { key: 'page-3', number: 3, title: 'Who We Are / Introduction / Core Improvement Capability', group: null },
+      { key: 'page-4', number: 4, title: 'What We Do / Triple Thread Service', group: null },
+      { key: 'page-5', number: 5, title: 'Vision, Mission & Values', group: null },
+      { key: 'page-6', number: 6, title: 'Business Model / Goals & Objectives / Economic Intent / Business Concept', group: null },
+      { key: 'page-7', number: 7, title: 'Strategy & Quality Policy', group: null },
+      { key: 'page-8', number: 8, title: 'Competitive Edge', group: null },
+      { key: 'page-9', number: 9, title: 'Our Team & Management — Monique Phillis', group: null },
+      { key: 'page-10', number: 10, title: 'Our Team — Vincent Seboni', group: null },
+      { key: 'page-11', number: 11, title: 'Enterprise Transformation Bench / Strategic Partner Overview', group: null },
+      { key: 'page-12', number: 12, title: 'Mxolisi Kobus — Executive Profile', group: null },
+      { key: 'page-13', number: 13, title: 'Sadha Govender — Executive Profile', group: null },
+      { key: 'page-14', number: 14, title: 'Marc Corcoran — Executive Profile', group: null },
+      { key: 'page-15', number: 15, title: 'Zweli Ndese — Executive Profile', group: null },
+      { key: 'page-16', number: 16, title: 'Lefu Mohloki — Executive Profile', group: null },
+    ],
+  },
+  'template-filament-slides-review': {
+    reviewItemType: 'Presentation Slide',
+    itemNoun: 'Slide',
+    items: [
+      { key: 'slide-1', number: 1, title: 'Productivity Transformation, One Person at a Time', group: 'Section 1 — Opening & Executive Storyline' },
+      { key: 'slide-2', number: 2, title: 'Executive Storyline / Presentation Overview', group: 'Section 1 — Opening & Executive Storyline' },
+      { key: 'slide-3', number: 3, title: 'Why Productivity Transformation?', group: 'Section 2 — Productivity & Mining Challenge' },
+      { key: 'slide-4', number: 4, title: 'Employer Problem-Solving Dilemma', group: 'Section 2 — Productivity & Mining Challenge' },
+      { key: 'slide-5', number: 5, title: 'Highly Interdependent Mining System', group: 'Section 2 — Productivity & Mining Challenge' },
+      { key: 'slide-6', number: 6, title: 'VUCA, Governance & MHSA Pressure', group: 'Section 2 — Productivity & Mining Challenge' },
+      { key: 'slide-7', number: 7, title: 'Resource Management & The Goal', group: 'Section 2 — Productivity & Mining Challenge' },
+      { key: 'slide-8', number: 8, title: 'Mining as ROI', group: 'Section 2 — Productivity & Mining Challenge' },
+      { key: 'slide-9', number: 9, title: 'Linear Mining Process Logic', group: 'Section 2 — Productivity & Mining Challenge' },
+      { key: 'slide-10', number: 10, title: 'Day in the Life of an Employer', group: 'Section 2 — Productivity & Mining Challenge' },
+      { key: 'slide-11', number: 11, title: 'Transactional vs Transformational Improvement', group: 'Section 2 — Productivity & Mining Challenge' },
+      { key: 'slide-12', number: 12, title: 'Filament at a Glance', group: 'Section 3 — Filament Company & Strategic Positioning' },
+      { key: 'slide-13', number: 13, title: 'Vision, Mission & Values', group: 'Section 3 — Filament Company & Strategic Positioning' },
+      { key: 'slide-14', number: 14, title: 'Strategy & Quality Policy', group: 'Section 3 — Filament Company & Strategic Positioning' },
+      { key: 'slide-15', number: 15, title: 'What Filament Does', group: 'Section 3 — Filament Company & Strategic Positioning' },
+      { key: 'slide-16', number: 16, title: 'Competitive Edge', group: 'Section 3 — Filament Company & Strategic Positioning' },
+      { key: 'slide-17', number: 17, title: 'Business Model', group: 'Section 3 — Filament Company & Strategic Positioning' },
+      { key: 'slide-18', number: 18, title: 'TOC Foundation', group: 'Section 4 — Theory of Constraints & Improvement Methodology' },
+      { key: 'slide-19', number: 19, title: 'Five Focusing Steps', group: 'Section 4 — Theory of Constraints & Improvement Methodology' },
+      { key: 'slide-20', number: 20, title: 'Balanced Flowline', group: 'Section 4 — Theory of Constraints & Improvement Methodology' },
+      { key: 'slide-21', number: 21, title: 'Unbalanced Flowline', group: 'Section 4 — Theory of Constraints & Improvement Methodology' },
+      { key: 'slide-22', number: 22, title: 'Blockage, Starvation & Buffer Logic', group: 'Section 4 — Theory of Constraints & Improvement Methodology' },
+      { key: 'slide-23', number: 23, title: 'Continuous Improvement Methodology', group: 'Section 4 — Theory of Constraints & Improvement Methodology' },
+      { key: 'slide-24', number: 24, title: 'POOGI Implementation Profile', group: 'Section 4 — Theory of Constraints & Improvement Methodology' },
+      { key: 'slide-25', number: 25, title: 'Unique Value Proposition & ROI', group: 'Section 4 — Theory of Constraints & Improvement Methodology' },
+      { key: 'slide-26', number: 26, title: 'Lean Transformation Architecture', group: 'Section 5 — Lean Transformation & Sustainment' },
+      { key: 'slide-27', number: 27, title: 'Lean Transformation Timeframe', group: 'Section 5 — Lean Transformation & Sustainment' },
+      { key: 'slide-28', number: 28, title: 'The Sustainment Problem', group: 'Section 5 — Lean Transformation & Sustainment' },
+      { key: 'slide-29', number: 29, title: 'Crossing the Chasm', group: 'Section 5 — Lean Transformation & Sustainment' },
+      { key: 'slide-30', number: 30, title: 'Graduate Capability & Sustainment', group: 'Section 5 — Lean Transformation & Sustainment' },
+      { key: 'slide-31', number: 31, title: 'Win-Win-Win Strategy', group: 'Section 5 — Lean Transformation & Sustainment' },
+      { key: 'slide-32', number: 32, title: 'Proof: Credentials & Results', group: 'Section 6 — Proof, Leadership & Enterprise Capability' },
+      { key: 'slide-33', number: 33, title: 'Endorsements as Source Evidence', group: 'Section 6 — Proof, Leadership & Enterprise Capability' },
+      { key: 'slide-34', number: 34, title: 'Monique Phillis Profile', group: 'Section 6 — Proof, Leadership & Enterprise Capability' },
+      { key: 'slide-35', number: 35, title: 'Vincent Seboni Profile', group: 'Section 6 — Proof, Leadership & Enterprise Capability' },
+      { key: 'slide-36', number: 36, title: 'Enterprise Transformation Bench', group: 'Section 6 — Proof, Leadership & Enterprise Capability' },
+      { key: 'slide-37', number: 37, title: 'Partner Capability Matrix', group: 'Section 6 — Proof, Leadership & Enterprise Capability' },
+      { key: 'slide-38', number: 38, title: 'Partner Profile Section', group: 'Section 6 — Proof, Leadership & Enterprise Capability' },
+      { key: 'slide-39', number: 39, title: 'Integrated Enterprise Transformation Capability', group: 'Section 6 — Proof, Leadership & Enterprise Capability' },
+      { key: 'slide-40', number: 40, title: 'Our Clients', group: 'Section 7 — Clients, Opportunity & Way Forward' },
+      { key: 'slide-41', number: 41, title: 'Proposed Engagement & Opportunity', group: 'Section 7 — Clients, Opportunity & Way Forward' },
+      { key: 'slide-42', number: 42, title: 'Quo Vadis: Way Forward', group: 'Section 7 — Clients, Opportunity & Way Forward' },
+      { key: 'slide-43', number: 43, title: 'Build Lasting Performance / Closing', group: 'Section 7 — Clients, Opportunity & Way Forward' },
+    ],
+  },
+};

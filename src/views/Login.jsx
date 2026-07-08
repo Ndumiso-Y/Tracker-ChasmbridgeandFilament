@@ -48,7 +48,10 @@ export default function Login() {
       <div className="bg-slate-800 p-8 rounded-xl shadow-xl max-w-md w-full border border-slate-700">
         <div className="text-center mb-8">
           <h1 className="text-2xl font-bold text-white tracking-tight mb-2">Chasm Bridge & Filament</h1>
-          <h2 className="text-lg text-amber-500 font-medium">Collaboration Login</h2>
+          <h2 className="text-lg text-amber-500 font-medium">Secure Command Center Access</h2>
+          <p className="text-sm text-slate-400 mt-3">
+            Enter your approved email to receive a secure sign-in link. Your available workspace and controls are determined by your approved access profile.
+          </p>
         </div>
 
         {error && (

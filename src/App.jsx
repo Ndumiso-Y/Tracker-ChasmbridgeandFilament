@@ -26,6 +26,7 @@ import {
   futurePhaseItems
 } from "./data/trackerData";
 import { validateWrite } from "./utils/validation";
+import { collaborationService } from "./services/collaborationService";
 
 // Import Views
 import Dashboard from "./views/Dashboard";
@@ -67,6 +68,7 @@ function mapTaskFromDb(t) {
     phase: t.phase,
     priority: t.priority || "Medium",
     dueDate: t.due_date || "",
+    lastUpdated: t.updated_at || null,
     entity: t.entity || "Both",
     deliveryContext: t.delivery_context || null,
     recordType: t.record_type || "Task",
@@ -82,6 +84,7 @@ function mapTaskFromDb(t) {
     requiresApproval: t.requires_approval || false,
     approvalStatus: t.approval_status || "Not Required",
     cadenceStatus: t.cadence_status || null,
+    completedAt: t.completed_at || null,
   };
 }
 
@@ -411,16 +414,20 @@ function App() {
     let oldPriority = "";
     let oldResponsible = "";
     let oldNotes = "";
+    let oldClientInput = "";
+    let oldCompletedAt = null;
 
     if (isTask) {
       const t = dbTasks.find(x => x.id === itemId);
       if (t) {
+        oldCompletedAt = t.completedAt || null;
         oldStatus = t.status;
         oldDueDate = t.dueDate;
         oldNextAction = t.nextAction;
         oldPriority = t.priority;
         oldResponsible = t.responsible;
         oldNotes = t.notes;
+        oldClientInput = t.clientInput;
       }
     } else if (isDeliverable) {
       const d = dbDeliverables.find(x => x.id === itemId);
@@ -470,8 +477,18 @@ function App() {
     if (updatedFields.cadenceStatus !== undefined) updateData.cadence_status = updatedFields.cadenceStatus || null;
     if (updatedFields.blockedBy !== undefined) updateData.blocked_by = updatedFields.blockedBy || null;
     if (updatedFields.blockedSince !== undefined) updateData.blocked_since = updatedFields.blockedSince || null;
+    // completed_at is set once, the first time a tracker item reaches Done,
+    // and is never overwritten by a later re-completion — reopening (status
+    // moving away from Done) intentionally leaves it untouched rather than
+    // clearing it, preserving the original completion history.
+    if (isTask && updatedFields.status === "Done" && !oldCompletedAt) {
+      updateData.completed_at = new Date().toISOString();
+    }
 if (isDeliverable && updatedFields.clientInput !== undefined) {
       updateData.next_action = updatedFields.clientInput || null; // clientInput maps to next_action
+    }
+    if (isTask && updatedFields.clientInput !== undefined) {
+      updateData.description = updatedFields.clientInput || null; // clientInput maps to description for tasks
     }
 
     try {
@@ -496,7 +513,11 @@ if (isDeliverable && updatedFields.clientInput !== undefined) {
       if (updatedFields.cadenceStatus !== undefined) localFields.cadenceStatus = updatedFields.cadenceStatus;
       if (updatedFields.blockedBy !== undefined) localFields.blockedBy = updatedFields.blockedBy;
       if (updatedFields.blockedSince !== undefined) localFields.blockedSince = updatedFields.blockedSince;
+      if (updateData.completed_at !== undefined) localFields.completedAt = updateData.completed_at;
 if (isDeliverable && updatedFields.clientInput !== undefined) {
+        localFields.clientInput = updatedFields.clientInput;
+      }
+      if (isTask && updatedFields.clientInput !== undefined) {
         localFields.clientInput = updatedFields.clientInput;
       }
       if (updatedFields.priority !== undefined) {
@@ -609,6 +630,15 @@ if (isDeliverable && updatedFields.clientInput !== undefined) {
           changed_by_label: authorLabel
         });
       }
+      if (isTask && updatedFields.clientInput !== undefined && updatedFields.clientInput !== oldClientInput) {
+        notesToInsert.push({
+          tracker_item_id: itemId,
+          note_type: "manual",
+          note_text: `Client input needed updated from '${oldClientInput || "None"}' to '${updatedFields.clientInput || "None"}'`,
+          changed_by_author_id: selectedAuthorId,
+          changed_by_label: authorLabel
+        });
+      }
 
       // 4. Priority / Requirement Update Note
       if (updatedFields.priority !== undefined && updatedFields.priority !== oldPriority) {
@@ -661,6 +691,59 @@ if (isDeliverable && updatedFields.clientInput !== undefined) {
       console.error("Failed to update field:", err);
       triggerErrorToast(`Database write failed: ${err.message}`);
       return false;
+    }
+  };
+
+  const handleCreateDeliveryItem = async (formData) => {
+    if (!supabase) {
+      triggerErrorToast("Supabase is not configured. Cannot create delivery items.");
+      return { success: false, message: "Supabase is not configured." };
+    }
+
+    if (!selectedAuthorId) {
+      const message = "Please select who is making this update before saving.";
+      triggerErrorToast(message);
+      return { success: false, message };
+    }
+
+    const scanErrors = [];
+    Object.values(formData).forEach(val => {
+      if (typeof val === "string") {
+        const err = validateWrite(val);
+        if (err) scanErrors.push(err);
+      }
+    });
+    if (scanErrors.length > 0) {
+      triggerErrorToast(scanErrors[0]);
+      return { success: false, message: scanErrors[0] };
+    }
+
+    try {
+      const item = await collaborationService.createInternalDeliveryItem({
+        authorId: selectedAuthorId,
+        title: formData.title.trim(),
+        entity: formData.entity,
+        phase: formData.phase,
+        recordType: formData.recordType,
+        category: formData.category,
+        status: formData.status,
+        priority: formData.priority,
+        dueDate: formData.dueDate || null,
+        ownerLabel: formData.ownerLabel,
+        nextAction: formData.nextAction.trim() || null,
+        clientInput: formData.clientInput.trim() || null,
+        deliveryContext: formData.deliveryContext,
+        scopeTreatment: formData.scopeTreatment,
+      });
+
+      const mapped = mapTaskFromDb(item);
+      setDbTasks(prev => prev.some(t => t.id === mapped.id) ? prev.map(t => t.id === mapped.id ? mapped : t) : [...prev, mapped]);
+      return { success: true };
+    } catch (err) {
+      console.error(err);
+      const message = err.message || "Failed to create delivery item.";
+      triggerErrorToast(message);
+      return { success: false, message };
     }
   };
 
@@ -828,6 +911,18 @@ if (isDeliverable && updatedFields.clientInput !== undefined) {
               <p className="font-bold text-white">Phase 1 Fee: R23,000</p>
               <p>Owner: Ndumiso Yedwa, Embark Digitals</p>
             </div>
+            {session && isAdmin ? (
+              <p className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-wider text-emerald-400">
+                <ShieldCheck size={12} /> Secure Admin Access Active
+              </p>
+            ) : !session ? (
+              <a
+                href="#/login"
+                className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-wider text-slate-400 hover:text-gold transition"
+              >
+                <ShieldCheck size={12} /> Secure Sign In
+              </a>
+            ) : null}
             {!supabase ? (
               <p className="text-gold font-bold bg-gold/10 border border-gold/25 rounded p-2 text-[10px] uppercase tracking-wider leading-4">
                 Supabase is not configured. Editing is disabled.
@@ -916,6 +1011,7 @@ if (isDeliverable && updatedFields.clientInput !== undefined) {
               notes={dbNotes}
               userRole={userRole}
               onUpdateTask={handleInlineUpdate}
+              onCreateDeliveryItem={handleCreateDeliveryItem}
               selectedAuthorId={selectedAuthorId}
               authors={dbAuthors}
               onSelectAuthor={setSelectedAuthorId}
@@ -974,9 +1070,9 @@ if (isDeliverable && updatedFields.clientInput !== undefined) {
             />
           )}
           
-          {activeView === "client_input" && <ClientInputRequirements />}
-          {activeView === "weekly_review" && <WeeklyDeliveryReview />}
-          {activeView === "support" && <SupportIssues />}
+          {activeView === "client_input" && <ClientInputRequirements selectedAuthorId={selectedAuthorId} updateAuthors={dbAuthors} />}
+          {activeView === "weekly_review" && <WeeklyDeliveryReview selectedAuthorId={selectedAuthorId} authors={dbAuthors} />}
+          {activeView === "support" && <SupportIssues selectedAuthorId={selectedAuthorId} authors={dbAuthors} />}
 {activeView === "graduates" && (
             <GraduatesCohort
               userRole={userRole}

@@ -1,5 +1,5 @@
-import { useMemo, useState, useEffect, Fragment } from "react";
-import { Search, Filter, Target, ChevronDown, Edit2, X, SlidersHorizontal, AlertCircle, CheckCircle } from "lucide-react";
+import { useMemo, useState, useEffect, useRef, Fragment } from "react";
+import { Search, Filter, Target, ChevronDown, Edit2, X, SlidersHorizontal, AlertCircle, CheckCircle, Plus } from "lucide-react";
 import {
   tasks as staticTasks,
   phases,
@@ -9,16 +9,24 @@ import {
   teamMembers,
 } from "../data/trackerData";
 import { SectionHeader } from "../components/SectionHeader";
-import { Badge, StatusBadge, PhaseBadge, priorityStyles, statusStyles, labelPhase } from "../components/Badge";
+import { Badge, StatusBadge, PhaseBadge, PhaseIndicator, priorityStyles, statusStyles, labelPhase } from "../components/Badge";
 import { EmptyState } from "../components/EmptyState";
 import { Info } from "../components/Info";
 import { cx } from "../utils/cx";
+
+function formatLastUpdated(iso) {
+  if (!iso) return null;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleDateString("en-ZA", { day: "numeric", month: "short" });
+}
 
 export function TaskCommandCenter({
   tasks = staticTasks,
   notes = [],
   userRole = null,
   onUpdateTask = null,
+  onCreateDeliveryItem = null,
   selectedAuthorId = "",
   authors = [],
   onSelectAuthor = null
@@ -30,17 +38,85 @@ export function TaskCommandCenter({
   });
   const [query, setQuery] = useState("");
   const [activeNotesTaskId, setActiveNotesTaskId] = useState(null);
-  
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [createError, setCreateError] = useState(null);
+  const [creating, setCreating] = useState(false);
+  const [newItemForm, setNewItemForm] = useState({
+    title: "",
+    entity: "Both",
+    phase: "Phase 2",
+    recordType: "Task",
+    category: "Strategy",
+    status: "Not Started",
+    priority: "Medium",
+    dueDate: "",
+    ownerLabel: "Embark Digitals",
+    nextAction: "",
+    clientInput: "",
+    deliveryContext: "Package 3 Review",
+    scopeTreatment: "Current Delivery",
+  });
+
   // New Delivery Filter States
   const [currentDeliveryOnly, setCurrentDeliveryOnly] = useState(true);
   const [showMoreFilters, setShowMoreFilters] = useState(false);
 
+  // Sticky horizontal scroll rail + column-group jump control. The table's
+  // own scroll region can be taller than the viewport, pushing its native
+  // horizontal scrollbar out of reach without first scrolling to the bottom
+  // of the table — this rail stays pinned to the viewport bottom instead.
+  const tableScrollRef = useRef(null);
+  const railScrollRef = useRef(null);
+  const [tableScrollWidth, setTableScrollWidth] = useState(0);
+  const columnRefs = useRef({});
+
+  useEffect(() => {
+    const el = tableScrollRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const update = () => setTableScrollWidth(el.scrollWidth);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const syncRailFromTable = () => {
+    if (railScrollRef.current && tableScrollRef.current) {
+      railScrollRef.current.scrollLeft = tableScrollRef.current.scrollLeft;
+    }
+  };
+  const syncTableFromRail = () => {
+    if (railScrollRef.current && tableScrollRef.current) {
+      tableScrollRef.current.scrollLeft = railScrollRef.current.scrollLeft;
+    }
+  };
+  const jumpToColumn = (key) => {
+    const th = columnRefs.current[key];
+    const container = tableScrollRef.current;
+    if (!th || !container) return;
+    const containerRect = container.getBoundingClientRect();
+    const thRect = th.getBoundingClientRect();
+    const targetLeft = container.scrollLeft + (thRect.left - containerRect.left) - 8;
+    container.scrollTo({ left: targetLeft, behavior: "smooth" });
+  };
+
+  const columnGroups = [
+    { label: "Overview", key: "task" },
+    { label: "Delivery", key: "status" },
+    { label: "Execution", key: "nextAction" },
+    { label: "History", key: "notes" },
+  ];
+
   const filteredTasks = useMemo(() => {
     const text = query.trim().toLowerCase();
     return tasks.filter((task) => {
-      // 1. Current Delivery Override
-      if (currentDeliveryOnly && task.phase === "Phase 1") return false;
-      if (currentDeliveryOnly && task.phase === "Separate Scope") return false;
+      // 1. Current Delivery Override. This convenience toggle hides the
+      // historical Phase 1 and Separate Scope work by default — but only
+      // when no explicit phase has been chosen. An explicit phase click
+      // (below) must always win, otherwise selecting "Phase 1" would filter
+      // to Phase 1 and then be immediately re-hidden by this toggle.
+      if (currentDeliveryOnly && filters.phase === "All" && task.phase === "Phase 1") return false;
+      if (currentDeliveryOnly && filters.phase === "All" && task.phase === "Separate Scope") return false;
       
       // 2. Standard Filters
       const matchesFilters = Object.entries(filters).every(([key, value]) => {
@@ -57,6 +133,52 @@ export function TaskCommandCenter({
   }, [filters, query, tasks, currentDeliveryOnly]);
 
   const isAdmin = userRole === "admin";
+  const canOperateInternally = isAdmin && !!onCreateDeliveryItem;
+
+  const handleOpenCreateModal = () => {
+    setCreateError(null);
+    setNewItemForm({
+      title: "",
+      entity: "Both",
+      phase: "Phase 2",
+      recordType: "Task",
+      category: "Strategy",
+      status: "Not Started",
+      priority: "Medium",
+      dueDate: "",
+      ownerLabel: "Embark Digitals",
+      nextAction: "",
+      clientInput: "",
+      deliveryContext: "Package 3 Review",
+      scopeTreatment: "Current Delivery",
+    });
+    setShowCreateModal(true);
+  };
+
+  const handleCreateDeliveryItem = async (event) => {
+    event.preventDefault();
+    if (!selectedAuthorId) {
+      setCreateError("Please select an Active Editor in the sidebar to enable editing.");
+      return;
+    }
+    if (!newItemForm.title.trim()) {
+      setCreateError("Task / deliverable name is required.");
+      return;
+    }
+
+    setCreating(true);
+    setCreateError(null);
+    try {
+      const result = await onCreateDeliveryItem(newItemForm);
+      if (!result?.success) {
+        setCreateError(result?.message || "Failed to create delivery item.");
+        return;
+      }
+      setShowCreateModal(false);
+    } finally {
+      setCreating(false);
+    }
+  };
 
   const handleStatusChange = async (task, val, e) => {
     const success = await onUpdateTask(task.id, { status: val });
@@ -94,6 +216,17 @@ export function TaskCommandCenter({
         title="Master Delivery Register"
         copy="The complete command center for all items. Filters apply instantly. Use the 'Current Delivery' toggle to focus only on Phase 2 & Phase 3."
       />
+
+      {canOperateInternally && (
+        <div className="mb-4 flex justify-end">
+          <button
+            onClick={handleOpenCreateModal}
+            className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-gold text-navy font-bold text-sm shadow-md shadow-gold/20 hover:bg-gold/90 transition-all whitespace-nowrap"
+          >
+            <Plus size={16} /> Add Delivery Item
+          </button>
+        </div>
+      )}
 
       <div className="panel p-4">
         <div className="flex flex-col gap-3">
@@ -152,25 +285,60 @@ export function TaskCommandCenter({
           <Target size={17} className="text-gold" />
           Showing <span className="text-navy">{filteredTasks.length}</span> of <span className="text-navy">{tasks.length}</span> tracker items
         </div>
-        <div className="flex flex-wrap gap-2">
-          {phases.map((phase) => <PhaseBadge key={phase} phase={phase} />)}
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setFilters((prev) => ({ ...prev, phase: "All" }))}
+            className={cx(
+              "pill border transition cursor-pointer",
+              filters.phase === "All" ? "border-navy bg-navy text-white" : "border-slate-200 bg-white text-slate-600 hover:border-gold"
+            )}
+          >
+            All Phases
+          </button>
+          {phases.map((phase) => (
+            <button
+              key={phase}
+              type="button"
+              onClick={() => setFilters((prev) => ({ ...prev, phase: prev.phase === phase ? "All" : phase }))}
+              className={cx(
+                "transition cursor-pointer rounded-full",
+                filters.phase === phase ? "ring-2 ring-navy ring-offset-1" : "opacity-90 hover:opacity-100"
+              )}
+              title={`Show only ${labelPhase(phase)}`}
+            >
+              <PhaseBadge phase={phase} />
+            </button>
+          ))}
         </div>
       </div>
 
       {/* Desktop Responsive Table */}
       <div className="mt-5 hidden rounded-lg border border-slate-200 bg-white shadow-lift xl:block">
-        <div className="max-h-[calc(100vh-320px)] overflow-auto custom-scrollbar">
+        <div className="flex items-center gap-1.5 border-b border-slate-100 px-3 py-2 overflow-x-auto">
+          <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 mr-1 shrink-0">Jump to:</span>
+          {columnGroups.map((g) => (
+            <button
+              key={g.key}
+              onClick={() => jumpToColumn(g.key)}
+              className="text-[11px] font-bold px-2.5 py-1 rounded-full border border-slate-200 text-slate-600 hover:border-gold hover:text-navy transition whitespace-nowrap shrink-0"
+            >
+              {g.label}
+            </button>
+          ))}
+        </div>
+        <div ref={tableScrollRef} onScroll={syncRailFromTable} className="max-h-[calc(100vh-320px)] overflow-auto custom-scrollbar">
           <table className="w-full min-w-[1300px] table-fixed border-collapse text-left text-sm">
             <thead className="bg-navy text-white">
               <tr>
-                <th className="px-4 py-3 text-xs font-black uppercase tracking-[0.08em] w-[18%] sticky top-0 left-0 bg-navy z-30 sticky-header-shadow">Task & Indicators</th>
+                <th ref={(el) => (columnRefs.current.task = el)} className="px-4 py-3 text-xs font-black uppercase tracking-[0.08em] w-[18%] sticky top-0 left-0 bg-navy z-30 sticky-header-shadow">Task & Indicators</th>
                 <th className="px-4 py-3 text-xs font-black uppercase tracking-[0.08em] w-[7%] sticky top-0 bg-navy z-20">Phase</th>
                 <th className="px-4 py-3 text-xs font-black uppercase tracking-[0.08em] w-[11%] sticky top-0 bg-navy z-20">Responsible Party</th>
-                <th className="px-4 py-3 text-xs font-black uppercase tracking-[0.08em] w-[9%] sticky top-0 bg-navy z-20">Status</th>
+                <th ref={(el) => (columnRefs.current.status = el)} className="px-4 py-3 text-xs font-black uppercase tracking-[0.08em] w-[9%] sticky top-0 bg-navy z-20">Status</th>
                 <th className="px-4 py-3 text-xs font-black uppercase tracking-[0.08em] w-[8%] sticky top-0 bg-navy z-20">Due Date</th>
                 <th className="px-4 py-3 text-xs font-black uppercase tracking-[0.08em] w-[12%] sticky top-0 bg-navy z-20">Client Input / Blockers</th>
-                <th className="px-4 py-3 text-xs font-black uppercase tracking-[0.08em] w-[14%] sticky top-0 bg-navy z-20">Notes / History</th>
-                <th className="px-4 py-3 text-xs font-black uppercase tracking-[0.08em] w-[12%] sticky top-0 bg-navy z-20">Next Action</th>
+                <th ref={(el) => (columnRefs.current.notes = el)} className="px-4 py-3 text-xs font-black uppercase tracking-[0.08em] w-[14%] sticky top-0 bg-navy z-20">Notes / History</th>
+                <th ref={(el) => (columnRefs.current.nextAction = el)} className="px-4 py-3 text-xs font-black uppercase tracking-[0.08em] w-[12%] sticky top-0 bg-navy z-20">Next Action</th>
               </tr>
             </thead>
             <tbody>
@@ -196,7 +364,7 @@ export function TaskCommandCenter({
                         )}
                       </div>
                     </td>
-                    <td className="px-4 py-4"><PhaseBadge phase={task.phase} /></td>
+                    <td className="px-4 py-4"><PhaseIndicator phase={task.phase} /></td>
                     <td className="px-4 py-3">
                       {isAdmin && onUpdateTask ? (
                         <select
@@ -240,6 +408,9 @@ export function TaskCommandCenter({
                         />
                       ) : (
                         task.dueDate || "Parked"
+                      )}
+                      {task.lastUpdated && (
+                        <p className="mt-1 text-[9px] font-semibold text-slate-400 text-center">Updated {formatLastUpdated(task.lastUpdated)}</p>
                       )}
                     </td>
                     <td className="px-4 py-4 leading-5 text-slate-650">
@@ -286,6 +457,13 @@ export function TaskCommandCenter({
             </tbody>
           </table>
         </div>
+        <div
+          ref={railScrollRef}
+          onScroll={syncTableFromRail}
+          className="sticky bottom-0 z-40 overflow-x-auto overflow-y-hidden border-t border-slate-200 bg-white h-3.5 custom-scrollbar"
+        >
+          <div style={{ width: tableScrollWidth, height: 1 }} />
+        </div>
       </div>
 
       <div className="mt-5 grid gap-4 xl:hidden">
@@ -331,7 +509,120 @@ export function TaskCommandCenter({
           />
         );
       })()}
+
+      {showCreateModal && (
+        <div className="fixed inset-0 bg-navy/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fadeIn">
+          <div className="absolute inset-0" onClick={() => setShowCreateModal(false)} />
+          <div className="bg-white rounded-xl shadow-premium border border-slate-200 w-full max-w-3xl max-h-[90vh] overflow-hidden flex flex-col animate-scaleUp z-10">
+            <div className="bg-navy px-6 py-4 flex items-center justify-between text-white border-b border-white/10">
+              <div>
+                <span className="text-[10px] font-black uppercase tracking-[0.16em] text-gold">Internal Delivery Spine</span>
+                <h3 className="text-lg font-black mt-0.5">Add Delivery Item</h3>
+              </div>
+              <button
+                onClick={() => setShowCreateModal(false)}
+                className="text-slate-300 hover:text-white bg-white/10 hover:bg-white/20 p-2 rounded-lg transition-all"
+                aria-label="Close"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateDeliveryItem} className="flex-1 overflow-y-auto custom-scrollbar p-6 space-y-5">
+              {createError && (
+                <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm font-semibold">{createError}</div>
+              )}
+
+              <div>
+                <label className="block text-sm font-bold text-navy mb-1.5">Task / Deliverable Name</label>
+                <input
+                  type="text"
+                  value={newItemForm.title}
+                  onChange={(e) => setNewItemForm(prev => ({ ...prev, title: e.target.value }))}
+                  placeholder="e.g. Business Profile Adjustments"
+                  className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <ModalSelect label="Entity" value={newItemForm.entity} options={["Chasm Bridge Charity", "Filament", "Both"]} onChange={(value) => setNewItemForm(prev => ({ ...prev, entity: value }))} />
+                <ModalSelect label="Phase" value={newItemForm.phase} options={["Phase 2", "Phase 3"]} onChange={(value) => setNewItemForm(prev => ({ ...prev, phase: value }))} />
+                <ModalSelect label="Record Type" value={newItemForm.recordType} options={["Task", "Deliverable", "Milestone", "Approval Gate"]} onChange={(value) => setNewItemForm(prev => ({ ...prev, recordType: value }))} />
+                <ModalSelect label="Category" value={newItemForm.category} options={categories} onChange={(value) => setNewItemForm(prev => ({ ...prev, category: value }))} />
+                <ModalSelect label="Status" value={newItemForm.status} options={statuses.filter(s => !["Moved to Retainer", "Moved to Phase 2", "Moved to Phase 3", "Out of Scope", "Separate Scope"].includes(s))} onChange={(value) => setNewItemForm(prev => ({ ...prev, status: value }))} />
+                <ModalSelect label="Priority" value={newItemForm.priority} options={priorities} onChange={(value) => setNewItemForm(prev => ({ ...prev, priority: value }))} />
+                <div>
+                  <label className="block text-sm font-bold text-navy mb-1.5">Due Date</label>
+                  <input
+                    type="date"
+                    value={newItemForm.dueDate}
+                    onChange={(e) => setNewItemForm(prev => ({ ...prev, dueDate: e.target.value }))}
+                    className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold"
+                  />
+                </div>
+                <ModalSelect label="Owner / Responsible Party" value={newItemForm.ownerLabel} options={teamMembers} onChange={(value) => setNewItemForm(prev => ({ ...prev, ownerLabel: value }))} />
+                <ModalSelect label="Delivery Context" value={newItemForm.deliveryContext} options={["Package 3 Review", "Phase Delivery"]} onChange={(value) => setNewItemForm(prev => ({ ...prev, deliveryContext: value }))} />
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-bold text-navy mb-1.5">Next Action</label>
+                  <textarea
+                    value={newItemForm.nextAction}
+                    onChange={(e) => setNewItemForm(prev => ({ ...prev, nextAction: e.target.value }))}
+                    rows={3}
+                    className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-navy mb-1.5">Client Input Needed</label>
+                  <textarea
+                    value={newItemForm.clientInput}
+                    onChange={(e) => setNewItemForm(prev => ({ ...prev, clientInput: e.target.value }))}
+                    rows={3}
+                    className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold"
+                  />
+                </div>
+              </div>
+
+              <input type="hidden" value={newItemForm.scopeTreatment} readOnly />
+
+              <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setShowCreateModal(false)}
+                  className="px-4 py-2 text-sm font-bold text-slate-600 hover:text-navy bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={creating}
+                  className="px-5 py-2 text-sm font-bold text-navy bg-gold hover:bg-gold/90 rounded-lg shadow-md shadow-gold/20 transition-all disabled:opacity-60"
+                >
+                  {creating ? "Creating..." : "Create Delivery Item"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </>
+  );
+}
+
+function ModalSelect({ label, value, options, onChange }) {
+  return (
+    <div>
+      <label className="block text-sm font-bold text-navy mb-1.5">{label}</label>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold"
+      >
+        {options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+      </select>
+    </div>
   );
 }
 
