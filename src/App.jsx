@@ -43,6 +43,9 @@ import { useAuth } from './contexts/AuthContext';
 import ClientInputRequirements from './views/ClientInputRequirements';
 import SupportIssues from './views/SupportIssues';
 import WeeklyDeliveryReview from './views/WeeklyDeliveryReview';
+import ClientAttentionHome from './views/ClientAttentionHome';
+import FilamentReviews from './views/FilamentReviews';
+import ClientAccess from './views/ClientAccess';
 
 
 
@@ -143,6 +146,20 @@ function mapRecordByCategoryId(r) {
 function App() {
   const [activeView, setActiveView] = useState("dashboard");
 
+  // Direct record navigation (V4A.14): an attention item opens the EXACT
+  // record, not just the owning module. The target holds only { view,
+  // recordId } — never a copied record object; the owning view loads its
+  // register through its canonical persona-correct read path, finds the id,
+  // selects it, and then reports consumption so the target is cleared.
+  const [pendingRecordTarget, setPendingRecordTarget] = useState(null);
+  const openWorkspaceRecord = ({ view, recordId }) => {
+    setPendingRecordTarget({ view, recordId });
+    setActiveView(view);
+  };
+  const consumeRecordTarget = () => setPendingRecordTarget(null);
+  const targetRecordIdFor = (view) =>
+    pendingRecordTarget && pendingRecordTarget.view === view ? pendingRecordTarget.recordId : null;
+
   const auth = useAuth() || {};
   const { session, profile, isAdmin, isClient, hasAccess, hasProfile, isProfileActive, isLoading } = auth;
   // Historical internal Command Center behaviour (pre-V4A): the tracker opens
@@ -155,34 +172,44 @@ function App() {
   // it must not be shown to client contributors or to blocked auth states.
   const showActiveEditor = isAdmin || !session;
 
-  // Role-aware navigation groups
+  // Role-aware navigation groups (V4A.12): grouped by operating job, not by
+  // internal module taxonomy. Overview answers "what needs attention?";
+  // Delivery is the tracker_items spine in its two views; Client
+  // Collaboration holds every client-facing conversation surface (requests,
+  // tickets, reviews); Programme holds historical/reference context.
   const navGroups = [
+    {
+      title: 'OVERVIEW',
+      items: [
+        { id: 'dashboard', label: 'Command Center', icon: LayoutDashboard, adminOnly: true },
+      ]
+    },
     {
       title: 'DELIVERY',
       items: [
-        { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, adminOnly: true },
         { id: 'tasks', label: 'Task Command Center', icon: FolderKanban, adminOnly: true },
-        { id: 'delivery', label: 'July Delivery Board', icon: FolderKanban, adminOnly: true },
+        { id: 'delivery', label: 'Delivery Board', icon: FolderKanban, adminOnly: true },
       ]
     },
     {
       title: 'CLIENT COLLABORATION',
       items: [
-        { id: 'client_input', label: 'Client Input & Requirements', icon: FileStack },
-        { id: 'weekly_review', label: 'Weekly Delivery Review', icon: Rocket },
+        // The client contributor's operating home — "what needs my attention?"
+        // Internal users keep the Command Center; clients get this instead.
+        { id: 'client_home', label: 'Your Attention', icon: LayoutDashboard, clientOnly: true },
+        { id: 'client_input', label: 'Requests', icon: FileStack },
+        // The ongoing Filament review programmes get their own lens —
+        // same client_input_requests truth, dedicated discoverability.
+        { id: 'filament_reviews', label: 'Filament Reviews', icon: FileStack },
+        { id: 'support', label: 'Support & Tickets', icon: ShieldCheck },
+        { id: 'weekly_review', label: 'Weekly Reviews', icon: Rocket },
       ]
     },
     {
-      title: 'SUPPORT',
-      items: [
-        { id: 'support', label: 'Support & Issues', icon: ShieldCheck },
-      ]
-    },
-    {
-      title: 'PROGRAMME CONTEXT',
+      title: 'PROGRAMME',
       items: [
         { id: 'graduates', label: 'Graduates & Cohort', icon: GraduationCap, adminOnly: true },
-        { id: 'scope', label: 'Phase 1 Scope', icon: ShieldCheck, adminOnly: true },
+        { id: 'scope', label: 'Phase 1 Scope (Historical)', icon: ShieldCheck, adminOnly: true },
         { id: 'launch', label: 'Launch Readiness', icon: Rocket, adminOnly: true },
       ]
     },
@@ -192,6 +219,9 @@ function App() {
         { id: 'later', label: 'Retainer / Later Phases', icon: Layers3, adminOnly: true },
         { id: 'assets', label: 'Client Assets', icon: FileStack, adminOnly: true },
         { id: 'boundaries', label: 'Scope Boundaries', icon: Flag, adminOnly: true },
+        // Provision authenticated client collaborators (requires a secure
+        // admin session — the view itself explains and enforces this).
+        { id: 'client_access', label: 'Client Access', icon: ShieldCheck, adminOnly: true },
       ]
     }
   ];
@@ -204,6 +234,11 @@ function App() {
         // Hide internal views from active client contributors.
         // Legacy viewers (!session) continue to see public Command Center.
         if (isClient && !isAdmin) return false;
+      }
+      if (item.clientOnly) {
+        // The client attention home is only for authenticated client
+        // contributors — internal users keep the Command Center.
+        if (!(isClient && !isAdmin)) return false;
       }
       return true;
     })
@@ -222,10 +257,12 @@ function App() {
   const isViewBlockedForClient = isClient && !isAdmin && adminOnlyViewIds.has(activeView);
 
   // Keep activeView state in sync once a client contributor lands on, or is
-  // sitting on, an admin-only view (covers first-load landing and any stale state).
+  // sitting on, an admin-only view (covers first-load landing and any stale
+  // state). Clients land on their attention home — "what needs my attention?"
+  // — never on a register they'd have to interpret first.
   useEffect(() => {
     if (!isLoading && isViewBlockedForClient) {
-      setActiveView("client_input");
+      setActiveView("client_home");
     }
   }, [isLoading, isViewBlockedForClient]);
 
@@ -980,7 +1017,7 @@ if (isDeliverable && updatedFields.clientInput !== undefined) {
             // Computed synchronously (not via effect) so the admin component never
             // renders even for a single frame while activeView state catches up.
             if (isViewBlockedForClient) {
-              return <ClientInputRequirements />;
+              return <ClientAttentionHome onOpenRecord={openWorkspaceRecord} />;
             }
 
             if (session && !hasAccess) {
@@ -1003,6 +1040,10 @@ if (isDeliverable && updatedFields.clientInput !== undefined) {
               launchChecklist={dbLaunchItems}
               userRole={userRole}
               onUpdateLaunchItem={handleInlineUpdate}
+              hasProfile={!!profile}
+              selectedAuthorId={selectedAuthorId}
+              onNavigate={setActiveView}
+              onOpenRecord={openWorkspaceRecord}
             />
           )}
           {activeView === "tasks" && (
@@ -1015,6 +1056,8 @@ if (isDeliverable && updatedFields.clientInput !== undefined) {
               selectedAuthorId={selectedAuthorId}
               authors={dbAuthors}
               onSelectAuthor={setSelectedAuthorId}
+              targetRecordId={targetRecordIdFor("tasks")}
+              onRecordTargetConsumed={consumeRecordTarget}
             />
           )}
           {activeView === "delivery" && (
@@ -1070,9 +1113,12 @@ if (isDeliverable && updatedFields.clientInput !== undefined) {
             />
           )}
           
-          {activeView === "client_input" && <ClientInputRequirements selectedAuthorId={selectedAuthorId} updateAuthors={dbAuthors} />}
-          {activeView === "weekly_review" && <WeeklyDeliveryReview selectedAuthorId={selectedAuthorId} authors={dbAuthors} />}
-          {activeView === "support" && <SupportIssues selectedAuthorId={selectedAuthorId} authors={dbAuthors} />}
+          {activeView === "client_home" && <ClientAttentionHome onOpenRecord={openWorkspaceRecord} />}
+          {activeView === "filament_reviews" && <FilamentReviews selectedAuthorId={selectedAuthorId} onOpenRecord={openWorkspaceRecord} onNavigate={setActiveView} />}
+          {activeView === "client_access" && <ClientAccess />}
+          {activeView === "client_input" && <ClientInputRequirements selectedAuthorId={selectedAuthorId} updateAuthors={dbAuthors} onSelectAuthor={setSelectedAuthorId} targetRecordId={targetRecordIdFor("client_input")} onRecordTargetConsumed={consumeRecordTarget} />}
+          {activeView === "weekly_review" && <WeeklyDeliveryReview selectedAuthorId={selectedAuthorId} authors={dbAuthors} targetRecordId={targetRecordIdFor("weekly_review")} onRecordTargetConsumed={consumeRecordTarget} />}
+          {activeView === "support" && <SupportIssues selectedAuthorId={selectedAuthorId} authors={dbAuthors} onSelectAuthor={setSelectedAuthorId} targetRecordId={targetRecordIdFor("support")} onRecordTargetConsumed={consumeRecordTarget} />}
 {activeView === "graduates" && (
             <GraduatesCohort
               userRole={userRole}

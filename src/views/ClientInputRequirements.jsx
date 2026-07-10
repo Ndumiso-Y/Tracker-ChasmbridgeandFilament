@@ -5,9 +5,40 @@ import { FileStack, Clock, CheckCircle, ChevronRight, Save, Send, Plus, X } from
 import { cx } from '../utils/cx';
 import { GUIDED_REVIEW_CONFIGS } from '../data/guidedReviewConfigs';
 import GuidedReviewForm from '../components/GuidedReviewForm';
+import { PROGRAMME_ENTITIES, INPUT_URGENCY, GUIDED_REVIEW_ACTION_LABELS, RETIRED_TEMPLATE_IDS } from '../data/programmeContext';
+import { requestResponsibility, RESPONSIBILITY } from '../utils/responsibility';
+import { ResponsibilityBadge } from '../components/Badge';
+import { displayRequestStatus, REQUEST_ORIGIN_SHORT } from '../utils/statusLanguage';
+import { explainDbError } from '../utils/dbErrors';
 
-const ENTITY_OPTIONS = ['Chasm Bridge Charity', 'Filament', 'Both'];
-const URGENCY_OPTIONS = ['Normal', 'Time Sensitive', 'Urgent'];
+// Helper: returns a template-specific contextual label for the primary action
+// button when a guided review template is selected. Returns defaultLabel for
+// non-guided templates, ensuring no generic 'Start Guided Review' copy leaks.
+function getRequestPrimaryActionLabel(templateId, defaultLabel) {
+  if (!templateId) return defaultLabel;
+  return GUIDED_REVIEW_ACTION_LABELS[templateId] || (GUIDED_REVIEW_CONFIGS[templateId] ? 'Next: Review' : defaultLabel);
+}
+
+// Deterministic title suggestion for the fast intake paths (V4A.14): the
+// first sentence/line of "what did the client ask?", trimmed to a readable
+// length. No AI, no mutation of the ask text — just a draft the user can
+// edit under More Details before logging.
+function suggestTitleFromAsk(text) {
+  if (!text) return '';
+  let t = text.trim().split(/\n/)[0].replace(/\s+/g, ' ');
+  const sentenceEnd = t.search(/[.!?](\s|$)/);
+  if (sentenceEnd > 0) t = t.slice(0, sentenceEnd);
+  t = t.trim();
+  if (t.length > 70) t = t.slice(0, 70).replace(/\s+\S*$/, '').trim() + '…';
+  return t;
+}
+
+// The default request type for a normal (unstructured) request — structured
+// types (Company Profile Review, Presentation Review, Website Requirements,
+// Graphic / Flyer) stay one select away under More Details, so complexity
+// follows the work instead of fronting every intake.
+const GENERAL_REQUEST_TEMPLATE_ID = 'template-general';
+
 const URGENCY_BADGE = {
   'Normal': 'bg-slate-100 text-slate-600 border-slate-200',
   'Time Sensitive': 'bg-amber-50 text-amber-700 border-amber-200',
@@ -28,10 +59,11 @@ const TEMPLATE_DISPLAY_LABELS = {
   'template-technical': 'Technical Setup',
   'template-general': 'General Request',
   'template-filament-profile-review': 'Filament Company Profile Review',
-  'template-filament-slides-review': 'Filament Slides Review',
+  'template-filament-slides-review': 'Filament Presentation Review (43-slide, historical)',
+  'template-filament-slides-review-v2': 'Filament Presentation Review',
 };
 
-export default function ClientInputRequirements({ selectedAuthorId = "", updateAuthors = [] }) {
+export default function ClientInputRequirements({ selectedAuthorId = "", updateAuthors = [], onSelectAuthor = null, targetRecordId = null, onRecordTargetConsumed = null }) {
   const { profile, isAdmin, isClient } = useAuth();
   const [requests, setRequests] = useState([]);
   const [selectedRequest, setSelectedRequest] = useState(null);
@@ -45,15 +77,17 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
   const [loadingCreateData, setLoadingCreateData] = useState(false);
   const [templates, setTemplates] = useState([]);
   const [contributors, setContributors] = useState([]);
-  const [authors, setAuthors] = useState([]);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState(null);
   const [templateLoadError, setTemplateLoadError] = useState(null);
   const [notice, setNotice] = useState(null);
   const [newRequestForm, setNewRequestForm] = useState({
-    title: '', entity: 'Both', templateId: '', contributorUserId: '', approverAuthorId: '', contextNote: '', referenceLink: '', clientReportedUrgency: 'Normal',
+    title: '', entity: 'Both', templateId: '', contributorUserId: '', approverAuthorId: '', contextNote: '', referenceLink: '', clientReportedUrgency: 'Normal', linkedTrackerItemId: '', requirementSource: 'Platform',
   });
   const canOperateInternally = isAdmin || !!selectedAuthorId || !profile;
+
+  // Tracker items for Related Delivery Item picker in request creation
+  const [trackerItemsForLinking, setTrackerItemsForLinking] = useState([]);
 
   // Later contributor assignment (internal operator only)
   const [activeContributors, setActiveContributors] = useState([]);
@@ -65,19 +99,12 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
   // Two-tab information architecture (V4A.9): "Client Input" (the client
   // has a requirement and tells Embark) vs "Client Flow" (Embark asks the
   // client for structured input) are two different intentions that were
-  // previously mixed into one undifferentiated list. Defaults to the tab
-  // matching the resolved identity — an authenticated client lands on
-  // Client Input, the internal operator (including the no-session case,
-  // where profile never resolves) lands on Client Flow — but either
-  // identity may switch tabs to view the other direction.
-  const [activeTab, setActiveTab] = useState('client-flow');
-  const [tabInitialized, setTabInitialized] = useState(false);
-  useEffect(() => {
-    if (!tabInitialized && profile) {
-      setActiveTab(isClient ? 'client-input' : 'client-flow');
-      setTabInitialized(true);
-    }
-  }, [profile, isClient, tabInitialized]);
+  // Register lens (V4A.12): the primary operational question is WHO NEEDS
+  // TO ACT, not which database origin a request carries. The register is
+  // one list filtered by responsibility; request_origin stays visible as
+  // metadata on every card and in the detail view — provenance is never
+  // destroyed, it just no longer gates navigation.
+  const [activeFilter, setActiveFilter] = useState('active');
 
   // Client-originated requirement/change submission (authenticated
   // client_contributor only) — the opposite direction from "Request Client
@@ -86,14 +113,80 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
   const [clientSubmitting, setClientSubmitting] = useState(false);
   const [clientSubmitError, setClientSubmitError] = useState(null);
   const [clientSubmitForm, setClientSubmitForm] = useState({
-    title: '', templateId: '', clientReportedUrgency: 'Normal', contextNote: '', referenceLink: '',
+    title: '', templateId: '', clientReportedUrgency: 'Normal', contextNote: '', referenceLink: '', dateNeeded: '',
   });
+  // Progressive disclosure (V4A.14): the primary surface is "what do you
+  // need?" — everything else (title, request type, reference link) lives
+  // under a collapsed More Details section. titleEdited tracks whether the
+  // user has taken over the auto-suggested title.
+  const [showClientMoreDetails, setShowClientMoreDetails] = useState(false);
+  const [clientTitleEdited, setClientTitleEdited] = useState(false);
 
   // Register load states (V4A.10) — silent empty registers are forbidden;
   // "no rows", "no identity selected yet", and "load failed" are three
   // different situations and each gets its own visible state.
   const [loadError, setLoadError] = useState(null);
   const [needsAuthorSelection, setNeedsAuthorSelection] = useState(false);
+
+  // Visible response-write errors (V4A.15) — replaces the retired silent
+  // .catch(console.warn) persistence pattern. responseSaved is the matching
+  // positive signal: a confirmed server write says so out loud.
+  const [responseError, setResponseError] = useState(null);
+  const [responseSaved, setResponseSaved] = useState(false);
+
+  // Request retention actions (archive / draft delete) working state.
+  const [retentionBusy, setRetentionBusy] = useState(false);
+
+  // Internal request edit (V4A.18) — narrow, lifecycle-guarded, matching
+  // the ticket edit contract.
+  const [showEditPanel, setShowEditPanel] = useState(false);
+  const [editRequestForm, setEditRequestForm] = useState(null);
+  const [editSaving, setEditSaving] = useState(false);
+  const [editError, setEditError] = useState(null);
+
+  const openEditPanel = () => {
+    setEditError(null);
+    setEditRequestForm({
+      title: selectedRequest.title || '',
+      entity: selectedRequest.entity || 'Both',
+      clientReportedUrgency: selectedRequest.client_reported_urgency || 'Normal',
+      requirementSource: selectedRequest.requirement_source || 'Platform',
+      additionalContext: '',
+    });
+    setShowEditPanel(true);
+  };
+
+  const handleSaveRequestEdit = async () => {
+    if (!selectedAuthorId) {
+      setEditError('Choose a team member (Active Editor) first.');
+      return;
+    }
+    if (!editRequestForm.title.trim()) {
+      setEditError('A request title is required.');
+      return;
+    }
+    setEditSaving(true);
+    setEditError(null);
+    try {
+      const updated = await collaborationService.updateInternalClientInputRequest({
+        authorId: selectedAuthorId,
+        requestId: selectedRequest.id,
+        title: editRequestForm.title.trim(),
+        entity: editRequestForm.entity,
+        clientReportedUrgency: editRequestForm.clientReportedUrgency,
+        requirementSource: editRequestForm.requirementSource,
+        additionalContext: editRequestForm.additionalContext.trim() || null,
+      });
+      setSelectedRequest(prev => ({ ...prev, ...updated }));
+      setShowEditPanel(false);
+      await loadRequests();
+    } catch (err) {
+      console.error(err);
+      setEditError(explainDbError(err, 'supabase/client_input_request_edit.sql'));
+    } finally {
+      setEditSaving(false);
+    }
+  };
 
   // Internal operator: log a client requirement communicated outside the
   // platform (WhatsApp / Email / Meeting / Phone Call / Other).
@@ -103,7 +196,14 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
   const [logForm, setLogForm] = useState({
     title: '', entity: 'Both', requirementSource: 'WhatsApp', templateId: '',
     sourcePersonUserId: '', clientReportedUrgency: 'Normal', contextNote: '', referenceLink: '',
+    linkedTrackerItemId: '', dateNeeded: '',
   });
+  // Progressive disclosure (V4A.14): the normal WhatsApp/Email request logs
+  // from four visible fields (what did the client ask / related delivery
+  // item / source / urgency); provenance fields stay in the model under a
+  // collapsed More Details section — nothing is removed, only deferred.
+  const [showLogMoreDetails, setShowLogMoreDetails] = useState(false);
+  const [logTitleEdited, setLogTitleEdited] = useState(false);
 
   // Detail-view provenance comments ("what exactly did the client say?"),
   // loaded via the internal comments RPC for the no-session operator.
@@ -121,11 +221,27 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile, selectedAuthorId]);
 
+  // Direct record navigation (V4A.14): consume a targeted request id once
+  // the persona-correct register has loaded — select the real loaded row
+  // via the canonical handleSelectRequest (which resolves guided vs
+  // structured detail), then clear the consumed target.
+  useEffect(() => {
+    if (!targetRecordId || loading) return;
+    const found = requests.find(r => r.id === targetRecordId);
+    if (found) handleSelectRequest(found);
+    if (onRecordTargetConsumed) onRecordTargetConsumed();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [targetRecordId, loading, requests]);
+
   // Internal RPC rows are flat (template_title, counts, labels); reshape
   // them to the same shape the rest of the view already renders.
+  // The extended RPC (client_input_tracker_link.sql migration) also returns
+  // flat linked-item fields — these are already reshaped into tracker_items
+  // by collaborationService.getInternalClientInputRequests() before reaching here.
   const mapInternalRegisterRow = (r) => ({
     ...r,
     client_input_templates: { title: r.template_title },
+    // tracker_items is already nested by collaborationService — preserve it.
   });
 
   // The real persistence read contract (V4A.10):
@@ -183,6 +299,8 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
   const handleSelectRequest = async (req) => {
     setSelectedRequest(req);
     setShowAssignPicker(false);
+    setShowEditPanel(false);
+    setResponseError(null);
     setAssignError(null);
     setAssignSelection(req.assigned_contributor_user_id || '');
     setDetailComments([]);
@@ -265,64 +383,126 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
     }
   };
 
+  // Request retention (V4A.15): archive/unarchive real records (reversible,
+  // provenance-commented server-side); permanent delete only for
+  // never-assigned Drafts via the status-guarded RPC.
+  const handleArchiveToggle = async (req, archive) => {
+    if (!selectedAuthorId) {
+      showNotice('warning', 'Select an Active Editor in the sidebar to manage the register.');
+      return;
+    }
+    setRetentionBusy(true);
+    try {
+      if (archive) {
+        await collaborationService.archiveInternalClientInputRequest({ authorId: selectedAuthorId, requestId: req.id });
+        showNotice('success', 'Request archived. Find it under the Archived filter.');
+      } else {
+        await collaborationService.unarchiveInternalClientInputRequest({ authorId: selectedAuthorId, requestId: req.id });
+        showNotice('success', 'Request restored from archive.');
+      }
+      setSelectedRequest(null);
+      await loadRequests();
+    } catch (err) {
+      console.error(err);
+      showNotice('warning', explainDbError(err, 'supabase/client_access_and_request_retention.sql'));
+    } finally {
+      setRetentionBusy(false);
+    }
+  };
+
+  const handleDeleteDraft = async (req) => {
+    if (!selectedAuthorId) {
+      showNotice('warning', 'Select an Active Editor in the sidebar to manage the register.');
+      return;
+    }
+    if (!window.confirm(`Permanently delete the draft "${req.title}"? This cannot be undone.`)) return;
+    setRetentionBusy(true);
+    try {
+      await collaborationService.deleteInternalDraftClientInputRequest({ authorId: selectedAuthorId, requestId: req.id });
+      showNotice('success', 'Draft deleted.');
+      if (selectedRequest?.id === req.id) setSelectedRequest(null);
+      await loadRequests();
+    } catch (err) {
+      console.error(err);
+      showNotice('warning', explainDbError(err, 'supabase/client_access_and_request_retention.sql'));
+    } finally {
+      setRetentionBusy(false);
+    }
+  };
+
   const handleResponseChange = (sectionId, value) => {
     setResponses(prev => ({ ...prev, [sectionId]: value }));
   };
 
+  // Honest persistence (V4A.15): a failed save is a visible error, never a
+  // silently swallowed promise — the UI must not imply persistence that
+  // did not happen. Local status only advances on a confirmed server write.
   const handleSaveDraft = async () => {
     setSaving(true);
+    setResponseError(null);
+    setResponseSaved(false);
     try {
-      // Save all current responses
       for (const sectionId of Object.keys(responses)) {
         await collaborationService.upsertResponse({
           input_request_id: selectedRequest.id,
           template_section_id: sectionId,
           content: responses[sectionId],
           updated_by: profile?.user_id
-        }).catch(console.warn);
+        });
       }
 
       // Update status to In Progress if it was just Required
       if (selectedRequest.status === 'Client Input Required') {
-        await collaborationService.updateRequest(selectedRequest.id, {
+        const updated = await collaborationService.updateRequest(selectedRequest.id, {
           status: 'Client Input In Progress'
-        }).catch(console.warn);
-        setSelectedRequest(prev => ({ ...prev, status: 'Client Input In Progress' }));
+        });
+        setSelectedRequest(prev => ({ ...prev, ...updated }));
       }
+      setResponseSaved(true);
+      setTimeout(() => setResponseSaved(false), 5000);
+      return true;
     } catch (err) {
       console.error(err);
+      setResponseError(err.message || 'Your responses could not be saved. Nothing was lost on screen — please try again.');
+      return false;
     } finally {
       setSaving(false);
     }
   };
 
   const handleUrgencyChange = async (value) => {
+    setResponseError(null);
     try {
       const updated = await collaborationService.updateRequest(selectedRequest.id, { client_reported_urgency: value });
       setSelectedRequest(updated);
     } catch (err) {
       console.error(err);
+      setResponseError(err.message || 'The urgency change could not be saved.');
     }
   };
 
   const handleSubmit = async () => {
     setSaving(true);
+    setResponseError(null);
     try {
-      await handleSaveDraft();
+      const saved = await handleSaveDraft();
+      if (!saved) return;
 
-      // Freeze revisions
+      // Freeze revisions (history snapshot — a failure here must not block
+      // the submission itself, but is still logged).
       await collaborationService.freezeRevisions(selectedRequest.id).catch(console.warn);
 
-      // Update status
-      await collaborationService.updateRequest(selectedRequest.id, {
+      // Status advances ONLY on a confirmed server write.
+      const updated = await collaborationService.updateRequest(selectedRequest.id, {
         status: 'Ready for Embark Review',
         submitted_at: new Date().toISOString()
-      }).catch(console.warn);
+      });
 
-      setSelectedRequest(prev => ({ ...prev, status: 'Ready for Embark Review' }));
+      setSelectedRequest(prev => ({ ...prev, ...updated }));
       await loadRequests();
     } catch (err) {
       console.error(err);
+      setResponseError(err.message || 'Your submission could not be completed. Your responses are saved as a draft — please try again.');
     } finally {
       setSaving(false);
     }
@@ -331,7 +511,7 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
   const openCreateModal = async () => {
     setCreateError(null);
     setTemplateLoadError(null);
-    setNewRequestForm({ title: '', entity: 'Both', templateId: '', contributorUserId: '', approverAuthorId: selectedAuthorId || '', contextNote: '', referenceLink: '', clientReportedUrgency: 'Normal' });
+    setNewRequestForm({ title: '', entity: 'Both', templateId: '', contributorUserId: '', approverAuthorId: selectedAuthorId || '', contextNote: '', referenceLink: '', clientReportedUrgency: 'Normal', linkedTrackerItemId: '', requirementSource: 'Platform' });
     setShowCreateModal(true);
     setLoadingCreateData(true);
 
@@ -358,9 +538,11 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
       console.error(err);
     }
 
+    // Load tracker items for Related Delivery Item picker
+    // (entity-filtered client-side; Phase 2/3 are the relevant delivery items).
     try {
-      const auths = await collaborationService.getActiveUpdateAuthors();
-      setAuthors(auths || []);
+      const items = await collaborationService.searchTrackerItemsForLinking();
+      setTrackerItemsForLinking(items || []);
     } catch (err) {
       console.error(err);
     }
@@ -375,21 +557,22 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
       return;
     }
     if (!selectedAuthorId) {
-      setCreateError('Please select an Active Editor in the sidebar to enable editing.');
+      setCreateError('Choose who is creating this under "Created by" first.');
       return;
     }
     setCreating(true);
     setCreateError(null);
     try {
-      // Reference link is not a dedicated physical field on
-      // client_input_requests — it is folded into the same provenance
-      // comment as the brief/context, the existing truthful storage
-      // mechanism (client_input_comments), rather than fabricating a column.
+      // Reference link and non-platform source are folded into the same
+      // truthful provenance comment (client_input_comments) — the create
+      // RPC's physical contract is unchanged.
       const referenceLink = newRequestForm.referenceLink.trim();
       const contextText = newRequestForm.contextNote.trim();
-      const combinedContext = referenceLink
-        ? `Reference: ${referenceLink}${contextText ? `\n\n${contextText}` : ''}`
-        : contextText;
+      const combinedContext = [
+        newRequestForm.requirementSource !== 'Platform' ? `Source: ${newRequestForm.requirementSource}` : '',
+        referenceLink ? `Reference: ${referenceLink}` : '',
+        contextText,
+      ].filter(Boolean).join('\n\n');
 
       const created = await collaborationService.createInternalClientInputRequest({
         authorId: selectedAuthorId,
@@ -401,8 +584,22 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
         contextNote: combinedContext || null,
         clientReportedUrgency: newRequestForm.clientReportedUrgency,
       });
+
+      // If a Related Delivery Item was selected, link it atomically before
+      // entering the guided wizard. Failure must block wizard entry.
+      if (created && newRequestForm.linkedTrackerItemId) {
+        await collaborationService.linkInternalClientInputRequestTrackerItem({
+          authorId: selectedAuthorId,
+          requestId: created.id,
+          trackerItemId: newRequestForm.linkedTrackerItemId,
+        });
+      }
+
       setShowCreateModal(false);
       await reloadAfterCreate(created);
+      if (GUIDED_REVIEW_CONFIGS[newRequestForm.templateId] && created) {
+        await handleSelectRequest(created);
+      }
     } catch (err) {
       console.error(err);
       setCreateError(err.message || 'Failed to create request.');
@@ -417,7 +614,10 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
     setLogForm({
       title: '', entity: 'Both', requirementSource: 'WhatsApp', templateId: '',
       sourcePersonUserId: '', clientReportedUrgency: 'Normal', contextNote: '', referenceLink: '',
+      linkedTrackerItemId: '', dateNeeded: '',
     });
+    setShowLogMoreDetails(false);
+    setLogTitleEdited(false);
     setShowLogModal(true);
     setLoadingCreateData(true);
     try {
@@ -425,6 +625,11 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
       setTemplates(tpls || []);
       if (!tpls || tpls.length === 0) {
         setTemplateLoadError('No request types are currently available. Please try again, or contact Embark Digitals if this persists.');
+      } else if (tpls.some(t => t.id === GENERAL_REQUEST_TEMPLATE_ID)) {
+        // A normal WhatsApp/Email request defaults to General Request so the
+        // primary surface needs no type decision; structured types remain
+        // selectable under More Details.
+        setLogForm(prev => ({ ...prev, templateId: prev.templateId || GENERAL_REQUEST_TEMPLATE_ID }));
       }
     } catch (err) {
       console.error(err);
@@ -441,39 +646,83 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
         setContributors([]);
       }
     }
+    // Related Delivery Item picker — the same live tracker_items truth the
+    // Request Client Input form already uses; optional, never blocking.
+    try {
+      const items = await collaborationService.searchTrackerItemsForLinking();
+      setTrackerItemsForLinking(items || []);
+    } catch (err) {
+      console.error(err);
+    }
     setLoadingCreateData(false);
   };
 
   const handleLogRequirement = async (e) => {
     e.preventDefault();
-    if (!logForm.title.trim() || !logForm.templateId) {
-      setLogError('Title and request type are required.');
+    // The ask is the only mandatory intake field; title auto-suggests.
+    const askText = logForm.contextNote.trim();
+    const resolvedTitle = logForm.title.trim() || suggestTitleFromAsk(askText);
+    if (!askText || !resolvedTitle || !logForm.templateId) {
+      setLogError(!askText ? 'Please describe what the client asked.' : 'A request type is required — choose one under More Details.');
       return;
     }
     if (!selectedAuthorId) {
-      setLogError('Please select an Active Editor in the sidebar to enable editing.');
+      setLogError('Choose who is recording this under "Recorded by" first.');
       return;
     }
     setLogging(true);
     setLogError(null);
     try {
+      // Requester resolution: a provisioned client sign-in links formally
+      // (contributor uuid); a team/client name is honest provenance recorded
+      // in the request context — the two identity systems never collapse.
+      let requesterContributorId = null;
+      let requesterLine = '';
+      if (logForm.sourcePersonUserId.startsWith('contrib:')) {
+        requesterContributorId = logForm.sourcePersonUserId.slice(8);
+      } else if (logForm.sourcePersonUserId.startsWith('author:')) {
+        const reqAuthor = updateAuthors.find(a => a.id === logForm.sourcePersonUserId.slice(7));
+        if (reqAuthor) requesterLine = `Requested by: ${reqAuthor.display_name}`;
+      }
+
       const referenceLink = logForm.referenceLink.trim();
-      const contextText = logForm.contextNote.trim();
-      const combinedContext = referenceLink
-        ? `Reference: ${referenceLink}${contextText ? `\n\n${contextText}` : ''}`
-        : contextText;
+      const combinedContext = [
+        requesterLine,
+        logForm.dateNeeded ? `Needed by: ${logForm.dateNeeded} (client's preferred timing, not a confirmed delivery date)` : '',
+        referenceLink ? `Reference: ${referenceLink}` : '',
+        askText,
+      ].filter(Boolean).join('\n\n');
+
+      // Entity derives from the linked delivery item when one is selected;
+      // the manual Entity field (More Details) only applies to unlinked
+      // general requests.
+      const linkedItem = logForm.linkedTrackerItemId
+        ? trackerItemsForLinking.find(t => t.id === logForm.linkedTrackerItemId)
+        : null;
+      const resolvedEntity = (linkedItem && linkedItem.entity) || logForm.entity;
 
       const created = await collaborationService.logInternalClientRequirement({
         authorId: selectedAuthorId,
-        title: logForm.title.trim(),
-        entity: logForm.entity,
+        title: resolvedTitle,
+        entity: resolvedEntity,
         requirementSource: logForm.requirementSource,
         clientReportedUrgency: logForm.clientReportedUrgency,
         templateId: logForm.templateId,
         contextNote: combinedContext || null,
         guidedReview: !!GUIDED_REVIEW_CONFIGS[logForm.templateId],
-        contributorUserId: logForm.sourcePersonUserId || null,
+        contributorUserId: requesterContributorId,
       });
+
+      // Link the Related Delivery Item through the narrow link RPC — same
+      // contract as the Request Client Input flow.
+      if (created && logForm.linkedTrackerItemId) {
+        await collaborationService.linkInternalClientInputRequestTrackerItem({
+          authorId: selectedAuthorId,
+          requestId: created.id,
+          trackerItemId: logForm.linkedTrackerItemId,
+        });
+      }
+
       setShowLogModal(false);
       await reloadAfterCreate(created);
       // Guided templates open straight into the step-by-step review so the
@@ -492,7 +741,9 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
   const openClientSubmitModal = async () => {
     setClientSubmitError(null);
     setTemplateLoadError(null);
-    setClientSubmitForm({ title: '', templateId: '', clientReportedUrgency: 'Normal', contextNote: '', referenceLink: '' });
+    setClientSubmitForm({ title: '', templateId: '', clientReportedUrgency: 'Normal', contextNote: '', referenceLink: '', dateNeeded: '' });
+    setShowClientMoreDetails(false);
+    setClientTitleEdited(false);
     setShowClientSubmitModal(true);
     setLoadingCreateData(true);
     // Same live client_input_templates architecture as the internal form —
@@ -503,6 +754,10 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
       setTemplates(tpls || []);
       if (!tpls || tpls.length === 0) {
         setTemplateLoadError('No request types are currently available. Please try again, or contact Embark Digitals if this persists.');
+      } else if (tpls.some(t => t.id === GENERAL_REQUEST_TEMPLATE_ID)) {
+        // A normal request defaults to General Request; structured review
+        // types stay one select away under More Details.
+        setClientSubmitForm(prev => ({ ...prev, templateId: prev.templateId || GENERAL_REQUEST_TEMPLATE_ID }));
       }
     } catch (err) {
       console.error(err);
@@ -513,8 +768,10 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
 
   const handleClientSubmitRequirement = async (e) => {
     e.preventDefault();
-    if (!clientSubmitForm.title.trim() || !clientSubmitForm.templateId) {
-      setClientSubmitError('Title and request type are required.');
+    const clientAskText = clientSubmitForm.contextNote.trim();
+    const clientResolvedTitle = clientSubmitForm.title.trim() || suggestTitleFromAsk(clientAskText);
+    if (!clientAskText || !clientResolvedTitle || !clientSubmitForm.templateId) {
+      setClientSubmitError(!clientAskText ? 'Please describe your request.' : 'A request type is required — choose one under More Details.');
       return;
     }
     if (!profile?.user_id) {
@@ -524,14 +781,16 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
     setClientSubmitting(true);
     setClientSubmitError(null);
     try {
-      // Reference link uses the same truthful storage contract as the
-      // internal flow — folded into the provenance comment, never a
-      // fabricated column.
+      // Reference link and preferred timing use the same truthful storage
+      // contract — folded into the provenance comment, never a fabricated
+      // column against the live schema. Preferred timing is client
+      // information, never a delivery promise.
       const referenceLink = clientSubmitForm.referenceLink.trim();
-      const contextText = clientSubmitForm.contextNote.trim();
-      const combinedContext = referenceLink
-        ? `Reference: ${referenceLink}${contextText ? `\n\n${contextText}` : ''}`
-        : contextText;
+      const combinedContext = [
+        clientSubmitForm.dateNeeded ? `Needed by: ${clientSubmitForm.dateNeeded} (preferred timing, not a confirmed delivery date)` : '',
+        referenceLink ? `Reference: ${referenceLink}` : '',
+        clientAskText,
+      ].filter(Boolean).join('\n\n');
 
       // Direct authenticated insert (RLS-enforced by "Contributors create
       // own requests" in client_originated_requirement_workflow.sql) — the
@@ -539,7 +798,7 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
       // the internal Active Editor / SECURITY DEFINER bridge.
       const newRequest = await collaborationService.createRequest({
         id: `req-client-${Date.now()}`,
-        title: clientSubmitForm.title.trim(),
+        title: clientResolvedTitle,
         entity: profile.entity_scope,
         template_id: clientSubmitForm.templateId,
         status: 'Client Input Required',
@@ -567,12 +826,52 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
     }
   };
 
+  // In-form team-member attribution (V4A.17): choosing "Recorded by" inside
+  // the form sets the same global Active Editor the sidebar controls — one
+  // identity truth, no detour to the sidebar, no "select an Active Editor"
+  // dead end mid-form.
+  const RecordedByPicker = ({ label = 'Recorded by (team member)' }) => (
+    <div>
+      <label className="block text-sm font-bold text-navy mb-1.5">{label}</label>
+      <select
+        value={selectedAuthorId}
+        onChange={(e) => onSelectAuthor && onSelectAuthor(e.target.value)}
+        className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold"
+      >
+        <option value="">Select team member...</option>
+        {updateAuthors.filter(a => a.is_active).map(a => (
+          <option key={a.id} value={a.id}>{a.display_name}</option>
+        ))}
+      </select>
+      {!selectedAuthorId && (
+        <p className="text-xs text-amber-700 mt-1">Required — this attributes the update (it also sets the Active Editor for the session).</p>
+      )}
+    </div>
+  );
+
   if (loading && !selectedRequest) {
     return <div className="p-8 text-slate-500">Loading requests...</div>;
   }
 
   if (selectedRequest) {
     const isReadOnly = ['Ready for Embark Review', 'Requirements Confirmed', 'In Production', 'Approved', 'Delivered'].includes(selectedRequest.status) && !isAdmin;
+
+    // Final state grammar (V4A.15): structured responses are EDITED only by
+    // an authenticated persona whose writes are real under RLS (the client
+    // contributor in the editable lifecycle window, or an admin). Everyone
+    // else — including the no-session internal operator, whose direct
+    // response writes would be silently RLS-denied — gets a readable VIEW
+    // MODE, never disabled input chrome.
+    const canEditResponses = !!profile && !isReadOnly;
+    const lockReason = isReadOnly
+      ? `Submitted to Embark${selectedRequest.submitted_at ? ` on ${new Date(selectedRequest.submitted_at).toLocaleDateString('en-ZA')}` : ''} — responses are locked. ${
+          requestResponsibility(selectedRequest) === RESPONSIBILITY.DONE
+            ? 'This request is completed.'
+            : 'Embark is reviewing and will act next.'
+        }`
+      : !profile
+        ? 'Responses are completed by the client from their secure sign-in. You are viewing this request as an internal editor.'
+        : null;
 
     // Created/Logged By provenance: prefer the honest created_by column
     // (created_by_label from the internal register RPC, or resolved from the
@@ -615,11 +914,22 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
                 )}
                 <div className="flex flex-wrap items-center gap-3 text-sm text-slate-500">
                   <span className="bg-slate-100 px-2.5 py-1 rounded-full text-slate-600 font-medium">
-                    {selectedRequest.client_input_templates?.title || 'Template'}
+                    {TEMPLATE_DISPLAY_LABELS[selectedRequest.template_id] || selectedRequest.client_input_templates?.title || 'Request'}
                   </span>
                   <span className="bg-slate-100 px-2.5 py-1 rounded-full text-slate-600 font-medium">
                     {selectedRequest.entity}
                   </span>
+                  {selectedRequest.tracker_items && (
+                    <span className="bg-navy text-slate-100 px-2.5 py-1 rounded-full font-medium flex items-center gap-1.5 shadow-sm" title="Related Delivery Item — live tracker truth">
+                      <FileStack className="w-3 h-3 text-gold" />
+                      {selectedRequest.tracker_items.title}
+                      {(selectedRequest.tracker_items.phase || selectedRequest.tracker_items.status) && (
+                        <span className="text-slate-300 font-normal">
+                          · {[selectedRequest.tracker_items.phase, selectedRequest.tracker_items.status].filter(Boolean).join(' · ')}
+                        </span>
+                      )}
+                    </span>
+                  )}
                   <span className={cx(
                     "px-2.5 py-1 rounded-full font-medium border",
                     selectedRequest.status.includes('Required') || selectedRequest.status.includes('Progress') ? "bg-amber-50 text-amber-700 border-amber-200" :
@@ -627,26 +937,30 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
                     selectedRequest.status === 'Requirements Confirmed' ? "bg-emerald-50 text-emerald-700 border-emerald-200" :
                     "bg-slate-100 text-slate-600 border-slate-200"
                   )}>
-                    {selectedRequest.status}
+                    {displayRequestStatus(selectedRequest.status, isClient)}
                   </span>
-                  {isAdmin ? (
-                    selectedRequest.client_reported_urgency && selectedRequest.client_reported_urgency !== 'Normal' && (
-                      <span className={cx("px-2.5 py-1 rounded-full font-medium border", URGENCY_BADGE[selectedRequest.client_reported_urgency])}>
-                        Client Urgency: {selectedRequest.client_reported_urgency}
-                      </span>
-                    )
-                  ) : (
+                  {/* Urgency: only the authenticated client edits their own
+                      urgency (a real RLS write); every other persona reads. */}
+                  {isClient && !isReadOnly ? (
                     <label className="flex items-center gap-2">
                       <span className="text-xs font-bold text-slate-500">Urgency:</span>
                       <select
                         value={selectedRequest.client_reported_urgency || 'Normal'}
                         onChange={(e) => handleUrgencyChange(e.target.value)}
-                        disabled={isReadOnly}
-                        className="text-xs font-bold border border-slate-300 rounded-full px-2 py-1 bg-white text-slate-700 focus:ring-2 focus:ring-gold/30 focus:border-gold disabled:bg-slate-50"
+                        className="text-xs font-bold border border-slate-300 rounded-full px-2 py-1 bg-white text-slate-700 focus:ring-2 focus:ring-gold/30 focus:border-gold"
                       >
-                        {URGENCY_OPTIONS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                        {INPUT_URGENCY.map(opt => <option key={opt} value={opt}>{opt}</option>)}
                       </select>
                     </label>
+                  ) : (
+                    selectedRequest.client_reported_urgency && selectedRequest.client_reported_urgency !== 'Normal' && (
+                      <span className={cx("px-2.5 py-1 rounded-full font-medium border", URGENCY_BADGE[selectedRequest.client_reported_urgency])}>
+                        Urgency: {selectedRequest.client_reported_urgency}
+                      </span>
+                    )
+                  )}
+                  {selectedRequest.archived_at && (
+                    <span className="px-2.5 py-1 rounded-full font-medium border bg-slate-100 text-slate-500 border-slate-200">Archived</span>
                   )}
                 </div>
               </div>
@@ -666,18 +980,127 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
                     <span className="text-slate-700 font-medium">{assignedContributorLabel}</span>
                   </div>
                 </div>
-                {assignmentLifecycleLocked ? (
-                  <p className="text-xs text-slate-400 max-w-xs text-right">Contributor assignment is locked — this request has already been submitted.</p>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={handleOpenAssignPicker}
-                    className="flex items-center gap-2 px-4 py-2 text-sm font-bold text-navy bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
-                  >
-                    {selectedRequest.assigned_contributor_user_id ? 'Change Contributor' : 'Assign Contributor'}
-                  </button>
-                )}
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  {/* Narrow internal edit (V4A.18) — title/entity/urgency/
+                      source only; anything except Approved/Delivered. */}
+                  {!['Approved', 'Delivered'].includes(selectedRequest.status) && (
+                    <button
+                      type="button"
+                      onClick={openEditPanel}
+                      className="flex items-center gap-2 px-4 py-2 text-sm font-bold text-navy bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
+                    >
+                      Edit Request
+                    </button>
+                  )}
+                  {assignmentLifecycleLocked ? (
+                    <p className="text-xs text-slate-400 max-w-xs text-right">Contributor assignment is locked — this request has already been submitted.</p>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={handleOpenAssignPicker}
+                      className="flex items-center gap-2 px-4 py-2 text-sm font-bold text-navy bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
+                    >
+                      {selectedRequest.assigned_contributor_user_id ? 'Change Contributor' : 'Assign Contributor'}
+                    </button>
+                  )}
+                  {/* Retention: real records archive (reversible); only a
+                      never-assigned Draft may be permanently deleted. */}
+                  {selectedRequest.status === 'Draft' && !selectedRequest.assigned_contributor_user_id ? (
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteDraft(selectedRequest)}
+                      disabled={retentionBusy}
+                      className="px-4 py-2 text-sm font-bold text-red-600 bg-red-50 hover:bg-red-100 border border-red-200 rounded-lg transition-colors disabled:opacity-60"
+                    >
+                      Delete Draft
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => handleArchiveToggle(selectedRequest, !selectedRequest.archived_at)}
+                      disabled={retentionBusy}
+                      className="px-4 py-2 text-sm font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors disabled:opacity-60"
+                    >
+                      {selectedRequest.archived_at ? 'Unarchive' : 'Archive'}
+                    </button>
+                  )}
+                </div>
               </div>
+
+              {showEditPanel && editRequestForm && (
+                <div className="mt-4 pt-4 border-t border-slate-200 space-y-3">
+                  {editError && (
+                    <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">{editError}</div>
+                  )}
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="sm:col-span-2">
+                      <label className="block text-sm font-bold text-navy mb-1.5">Title</label>
+                      <input
+                        type="text"
+                        value={editRequestForm.title}
+                        onChange={(e) => setEditRequestForm(prev => ({ ...prev, title: e.target.value }))}
+                        className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-bold text-navy mb-1.5">Entity</label>
+                      <select
+                        value={editRequestForm.entity}
+                        onChange={(e) => setEditRequestForm(prev => ({ ...prev, entity: e.target.value }))}
+                        className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold"
+                      >
+                        {PROGRAMME_ENTITIES.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-bold text-navy mb-1.5">Urgency</label>
+                      <select
+                        value={editRequestForm.clientReportedUrgency}
+                        onChange={(e) => setEditRequestForm(prev => ({ ...prev, clientReportedUrgency: e.target.value }))}
+                        className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold"
+                      >
+                        {INPUT_URGENCY.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-bold text-navy mb-1.5">Source</label>
+                      <select
+                        value={editRequestForm.requirementSource}
+                        onChange={(e) => setEditRequestForm(prev => ({ ...prev, requirementSource: e.target.value }))}
+                        className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold"
+                      >
+                        {['Platform', 'WhatsApp', 'Email', 'Meeting', 'Phone Call', 'Other'].map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                      </select>
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="block text-sm font-bold text-navy mb-1.5">Add Context <span className="font-normal text-slate-400">(optional — appended to the request history, the original ask is never rewritten)</span></label>
+                      <textarea
+                        value={editRequestForm.additionalContext}
+                        onChange={(e) => setEditRequestForm(prev => ({ ...prev, additionalContext: e.target.value }))}
+                        rows={2}
+                        className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={handleSaveRequestEdit}
+                      disabled={editSaving}
+                      className="px-4 py-2 text-sm font-bold text-navy bg-gold hover:bg-gold/90 rounded-lg shadow-md shadow-gold/20 transition-all disabled:opacity-60"
+                    >
+                      {editSaving ? 'Saving…' : 'Save Changes'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowEditPanel(false)}
+                      className="px-4 py-2 text-sm font-bold text-slate-600 hover:text-navy bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {showAssignPicker && (
                 <div className="mt-4 pt-4 border-t border-slate-200 space-y-3">
@@ -746,8 +1169,39 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
             />
           ) : (
           <div className="p-6 space-y-8">
+            {/* Lifecycle lock / view-mode explanation — grey chrome never
+                stands in for an explanation. */}
+            {lockReason && (
+              <div className="flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
+                <span aria-hidden="true">🔒</span>
+                <p>{lockReason}</p>
+              </div>
+            )}
+            {responseError && (
+              <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">{responseError}</div>
+            )}
+            {responseSaved && (
+              <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-700 text-sm font-bold">✓ Responses saved successfully.</div>
+            )}
             {sections.length === 0 ? (
               <p className="text-slate-500">No template sections found for this request.</p>
+            ) : !canEditResponses ? (
+              // VIEW MODE: readable answers, no disabled input chrome.
+              sections.map(section => {
+                const raw = responses[section.id];
+                let display = raw;
+                if (section.section_type === 'Checklist' && raw) {
+                  try { display = JSON.parse(raw).join(', '); } catch { display = raw; }
+                }
+                return (
+                  <div key={section.id} className="space-y-1.5">
+                    <p className="text-xs font-bold uppercase tracking-wide text-slate-400">{section.section_label}</p>
+                    <p className={cx("whitespace-pre-wrap text-slate-800", !display && "text-slate-400 italic")}>
+                      {display || 'No response provided.'}
+                    </p>
+                  </div>
+                );
+              })
             ) : (
               sections.map(section => (
                 <div key={section.id} className="space-y-3">
@@ -832,7 +1286,7 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
           </div>
           )}
 
-          {!isGuidedReview && !isReadOnly && sections.length > 0 && (
+          {!isGuidedReview && canEditResponses && sections.length > 0 && (
             <div className="p-6 bg-slate-50 border-t border-slate-200 flex flex-wrap items-center justify-end gap-4">
               <button
                 onClick={handleSaveDraft}
@@ -855,75 +1309,84 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
     );
   }
 
-  // Client Requests = everything that originated from the client, whether
-  // submitted directly on the platform or logged internally from WhatsApp/
-  // email/meetings/calls. Input Needed from Client = Embark-initiated
-  // structured input requests (plus legacy rows with no origin recorded).
-  const CLIENT_ORIGINS = ['Client-Originated Requirement', 'Internally Logged Client Requirement'];
-  const clientOriginatedRequests = requests.filter(r => CLIENT_ORIGINS.includes(r.request_origin));
-  const internallyRequestedRequests = requests.filter(r => !CLIENT_ORIGINS.includes(r.request_origin));
-  const visibleRequests = activeTab === 'client-input' ? clientOriginatedRequests : internallyRequestedRequests;
+  // One register, filtered by who needs to act (responsibility model).
+  // V4A.15: the Filament guided review programmes (Company Profile /
+  // Presentation) live in their own Filament Reviews lens — the generic
+  // register shows transactional requests only. Archived records leave
+  // every active lens and remain recoverable under Archived (internal).
+  const registerRequests = requests.filter(r => !GUIDED_REVIEW_CONFIGS[r.template_id]);
+  const guidedCount = requests.filter(r => GUIDED_REVIEW_CONFIGS[r.template_id] && !r.archived_at).length;
+  const notArchived = (r) => !r.archived_at;
+  const FILTERS = [
+    { key: 'active', label: 'Active', match: (r) => notArchived(r) && requestResponsibility(r) !== RESPONSIBILITY.DONE },
+    { key: 'embark', label: 'Needs Embark', match: (r) => notArchived(r) && requestResponsibility(r) === RESPONSIBILITY.EMBARK },
+    { key: 'client', label: 'Needs Client', match: (r) => notArchived(r) && requestResponsibility(r) === RESPONSIBILITY.CLIENT },
+    { key: 'drafts', label: 'Drafts', match: (r) => notArchived(r) && requestResponsibility(r) === RESPONSIBILITY.DRAFT },
+    { key: 'completed', label: 'Completed', match: (r) => notArchived(r) && requestResponsibility(r) === RESPONSIBILITY.DONE },
+    // Archived is an internal recovery lens, never client navigation.
+    ...(isClient ? [] : [{ key: 'archived', label: 'Archived', match: (r) => !!r.archived_at }]),
+  ];
+  const activeFilterDef = FILTERS.find(f => f.key === activeFilter) || FILTERS[0];
+  const visibleRequests = registerRequests.filter(activeFilterDef.match);
 
   return (
     <div className="flex-1 overflow-y-auto p-4 md:p-8 max-w-6xl mx-auto">
-      <div className="mb-6">
-        <h1 className="text-3xl font-black text-navy tracking-tight mb-2">Client Input & Requirements</h1>
-        <p className="text-slate-500">Provide exact copy, structure, and approvals required for delivery.</p>
+      <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-black text-navy tracking-tight mb-2">Requests</h1>
+          <p className="text-slate-500 max-w-xl">Everything the client has asked Embark for, and everything Embark is waiting on from the client — in one place.</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {isClient && (
+            <button
+              onClick={openClientSubmitModal}
+              className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-gold text-navy font-bold text-sm shadow-md shadow-gold/20 hover:bg-gold/90 transition-all whitespace-nowrap"
+            >
+              <Plus className="w-4 h-4" /> I Have a Request
+            </button>
+          )}
+          {canOperateInternally && !isClient && (
+            <>
+              <button
+                onClick={openLogModal}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-white border border-slate-200 text-navy font-bold text-sm hover:border-gold transition-all whitespace-nowrap"
+              >
+                <Plus className="w-4 h-4" /> Log Request
+              </button>
+              <button
+                onClick={openCreateModal}
+                className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-gold text-navy font-bold text-sm shadow-md shadow-gold/20 hover:bg-gold/90 transition-all whitespace-nowrap"
+              >
+                <Plus className="w-4 h-4" /> Request Client Input
+              </button>
+            </>
+          )}
+        </div>
       </div>
 
-      <div className="mb-6 flex flex-wrap items-center gap-2 border-b border-slate-200">
-        <button
-          type="button"
-          onClick={() => setActiveTab('client-input')}
-          className={cx(
-            "px-4 py-2.5 text-sm font-bold border-b-2 -mb-px transition-colors",
-            activeTab === 'client-input' ? "border-gold text-navy" : "border-transparent text-slate-400 hover:text-navy"
-          )}
-        >
-          Client Requests
-        </button>
-        <button
-          type="button"
-          onClick={() => setActiveTab('client-flow')}
-          className={cx(
-            "px-4 py-2.5 text-sm font-bold border-b-2 -mb-px transition-colors",
-            activeTab === 'client-flow' ? "border-gold text-navy" : "border-transparent text-slate-400 hover:text-navy"
-          )}
-        >
-          Input Needed from Client
-        </button>
-      </div>
+      {guidedCount > 0 && (
+        <div className="mb-4 rounded-lg border border-navy/15 bg-navy/[0.04] px-4 py-2.5 text-sm text-navy">
+          The Filament Company Profile and Presentation review programmes live under <span className="font-bold">Filament Reviews</span> in the sidebar.
+        </div>
+      )}
 
-      <div className="mb-8 flex flex-wrap items-start justify-between gap-4">
-        <p className="text-sm text-slate-500 max-w-xl">
-          {activeTab === 'client-input'
-            ? 'Requirements and change requests submitted by clients to Embark.'
-            : 'Embark requests structured input from a client before work can continue.'}
-        </p>
-        {activeTab === 'client-flow' && canOperateInternally && !isClient && (
-          <button
-            onClick={openCreateModal}
-            className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-gold text-navy font-bold text-sm shadow-md shadow-gold/20 hover:bg-gold/90 transition-all whitespace-nowrap"
-          >
-            <Plus className="w-4 h-4" /> Request Client Input
-          </button>
-        )}
-        {activeTab === 'client-input' && isClient && (
-          <button
-            onClick={openClientSubmitModal}
-            className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-gold text-navy font-bold text-sm shadow-md shadow-gold/20 hover:bg-gold/90 transition-all whitespace-nowrap"
-          >
-            <Plus className="w-4 h-4" /> Submit Requirement / Change
-          </button>
-        )}
-        {activeTab === 'client-input' && canOperateInternally && !isClient && (
-          <button
-            onClick={openLogModal}
-            className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-gold text-navy font-bold text-sm shadow-md shadow-gold/20 hover:bg-gold/90 transition-all whitespace-nowrap"
-          >
-            <Plus className="w-4 h-4" /> Log Client Requirement
-          </button>
-        )}
+      <div className="mb-6 flex flex-wrap items-center gap-2">
+        {FILTERS.map(f => {
+          const count = registerRequests.filter(f.match).length;
+          return (
+            <button
+              key={f.key}
+              type="button"
+              onClick={() => setActiveFilter(f.key)}
+              className={cx(
+                "px-3.5 py-1.5 rounded-full text-sm font-bold border transition-colors",
+                activeFilter === f.key ? "bg-navy border-navy text-white" : "bg-white border-slate-200 text-slate-500 hover:border-gold hover:text-navy"
+              )}
+            >
+              {f.label} <span className={cx("ml-1", activeFilter === f.key ? "text-white/60" : "text-slate-400")}>{count}</span>
+            </button>
+          );
+        })}
       </div>
 
       {loadError && (
@@ -933,8 +1396,18 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
         </div>
       )}
       {needsAuthorSelection && !loadError && (
-        <div className="mb-4 p-3 rounded-lg border border-amber-200 bg-amber-50 text-amber-800 text-sm">
-          Select an Active Editor in the sidebar to load the Client Input register.
+        <div className="mb-4 flex flex-wrap items-center gap-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+          <span>Choose a team member to load the register:</span>
+          <select
+            value={selectedAuthorId}
+            onChange={(e) => onSelectAuthor && onSelectAuthor(e.target.value)}
+            className="h-9 rounded-lg border border-amber-300 bg-white px-2 text-xs font-bold text-navy focus:border-gold focus:ring-2 focus:ring-gold/30"
+          >
+            <option value="">Select team member...</option>
+            {updateAuthors.filter(a => a.is_active).map(a => (
+              <option key={a.id} value={a.id}>{a.display_name}</option>
+            ))}
+          </select>
         </div>
       )}
 
@@ -952,37 +1425,35 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
           <div className="text-center p-12 bg-slate-50 rounded-xl border border-slate-200 border-dashed">
             <FileStack className="w-12 h-12 text-slate-300 mx-auto mb-4" />
             <h3 className="text-lg font-bold text-navy">
-              {activeTab === 'client-input'
-                ? (isClient ? 'No requirements submitted yet.' : 'No client-submitted requirements or change requests yet.')
-                : (canOperateInternally ? 'No client input requests yet.' : 'No requests assigned')}
+              {activeFilter === 'active'
+                ? (isClient ? 'No active requests.' : 'No active requests or client input.')
+                : activeFilter === 'embark' ? 'Nothing needs Embark right now.'
+                : activeFilter === 'client' ? 'Nothing is waiting on the client.'
+                : activeFilter === 'drafts' ? 'No draft requests.'
+                : activeFilter === 'archived' ? 'Nothing has been archived.'
+                : 'No completed requests yet.'}
             </h3>
             <p className="text-slate-500 mt-2">
-              {activeTab === 'client-input'
-                ? (isClient ? 'Have a change or requirement for Embark? Submit it directly below.' : 'Requirements submitted directly by client contributors will appear here.')
-                : (canOperateInternally ? 'Create a structured request to capture exact client instructions and approvals.' : 'You currently have no pending input requests.')}
+              {isClient
+                ? 'Have a change or requirement for Embark? Submit it directly above.'
+                : activeFilter === 'active'
+                  ? 'Log what a client asked for, or request structured input from a client, using the actions above.'
+                  : 'Switch filters above to see the rest of the register.'}
             </p>
-            {activeTab === 'client-flow' && canOperateInternally && (
+            {activeFilter === 'active' && isClient && (
+              <button
+                onClick={openClientSubmitModal}
+                className="mt-5 inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-gold text-navy font-bold text-sm shadow-md shadow-gold/20 hover:bg-gold/90 transition-all"
+              >
+                <Plus className="w-4 h-4" /> I Have a Request
+              </button>
+            )}
+            {activeFilter === 'active' && canOperateInternally && !isClient && !needsAuthorSelection && (
               <button
                 onClick={openCreateModal}
                 className="mt-5 inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-gold text-navy font-bold text-sm shadow-md shadow-gold/20 hover:bg-gold/90 transition-all"
               >
                 <Plus className="w-4 h-4" /> Request Client Input
-              </button>
-            )}
-            {activeTab === 'client-input' && isClient && (
-              <button
-                onClick={openClientSubmitModal}
-                className="mt-5 inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-gold text-navy font-bold text-sm shadow-md shadow-gold/20 hover:bg-gold/90 transition-all"
-              >
-                <Plus className="w-4 h-4" /> Submit Requirement / Change
-              </button>
-            )}
-            {activeTab === 'client-input' && canOperateInternally && !isClient && !needsAuthorSelection && (
-              <button
-                onClick={openLogModal}
-                className="mt-5 inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-gold text-navy font-bold text-sm shadow-md shadow-gold/20 hover:bg-gold/90 transition-all"
-              >
-                <Plus className="w-4 h-4" /> Log Client Requirement
               </button>
             )}
           </div>
@@ -1005,13 +1476,20 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
                 <div>
                   <h3 className="text-lg font-bold text-navy">{req.title}</h3>
                   <div className="flex flex-wrap items-center gap-3 mt-2 text-sm text-slate-500">
-                    <span className="flex items-center gap-1"><Clock className="w-4 h-4" /> {req.status}</span>
+                    <ResponsibilityBadge value={requestResponsibility(req)} />
+                    <span className="flex items-center gap-1"><Clock className="w-4 h-4" /> {displayRequestStatus(req.status, isClient)}</span>
                     <span>•</span>
                     <span>{req.entity}</span>
                     {req.client_input_templates?.title && (
                       <>
                         <span>•</span>
                         <span>{TEMPLATE_DISPLAY_LABELS[req.template_id] || req.client_input_templates.title}</span>
+                      </>
+                    )}
+                    {req.tracker_items && (
+                      <>
+                        <span>•</span>
+                        <span className="flex items-center gap-1 text-navy font-medium"><FileStack className="w-3 h-3 text-gold" /> {req.tracker_items.title}</span>
                       </>
                     )}
                     {req.review_acknowledged_at && (
@@ -1027,21 +1505,27 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
                     )}
                   </div>
                   <div className="flex flex-wrap items-center gap-3 mt-1.5 text-xs text-slate-400">
+                    {/* Provenance stays stored and visible — as a small human
+                        caption, never a raw database enum badge. The full
+                        request_origin value ('Internal Requested Input',
+                        'Client-Originated Requirement' or
+                        'Internally Logged Client Requirement') remains in the
+                        record and the detail metadata. */}
                     {req.request_origin && (
                       <span className={cx(
-                        "px-2 py-0.5 rounded-full font-bold border",
-                        req.request_origin === 'Client-Originated Requirement' ? "bg-blue-50 text-blue-700 border-blue-200" :
-                        req.request_origin === 'Internally Logged Client Requirement' ? "bg-violet-50 text-violet-700 border-violet-200" :
-                        "bg-slate-100 text-slate-600 border-slate-200"
+                        "font-bold",
+                        req.request_origin === 'Client-Originated Requirement' ? "text-blue-600" :
+                        req.request_origin === 'Internally Logged Client Requirement' ? "text-violet-600" :
+                        "text-slate-500"
                       )}>
-                        {req.request_origin}
+                        {REQUEST_ORIGIN_SHORT[req.request_origin] || req.request_origin}
                       </span>
                     )}
                     {req.requirement_source && req.requirement_source !== 'Platform' && (
                       <span>via {req.requirement_source}</span>
                     )}
                     {(req.created_by_label || (req.created_by_author_id && updateAuthors.find(a => a.id === req.created_by_author_id)?.display_name)) && (
-                      <span>Logged by {req.created_by_label || updateAuthors.find(a => a.id === req.created_by_author_id)?.display_name}</span>
+                      <span>Recorded by {req.created_by_label || updateAuthors.find(a => a.id === req.created_by_author_id)?.display_name}</span>
                     )}
                     {req.assigned_contributor_name && (
                       <span>Assigned: {req.assigned_contributor_name}</span>
@@ -1057,10 +1541,25 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
                         {Number(req.review_completed)} / {GUIDED_REVIEW_CONFIGS[req.template_id].items.length} reviewed
                       </span>
                     )}
+                    {req.status === 'Draft' && !req.assigned_contributor_user_id && (
+                      <span className="italic">Not yet assigned — not visible to the client</span>
+                    )}
                   </div>
                 </div>
               </div>
-              <ChevronRight className="w-5 h-5 text-slate-300 group-hover:text-gold" />
+              <div className="flex shrink-0 items-center gap-2">
+                {!isClient && req.status === 'Draft' && !req.assigned_contributor_user_id && (
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); handleDeleteDraft(req); }}
+                    disabled={retentionBusy}
+                    className="rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-bold text-red-600 hover:bg-red-100 transition-colors disabled:opacity-60"
+                  >
+                    Delete Draft
+                  </button>
+                )}
+                <ChevronRight className="w-5 h-5 text-slate-300 group-hover:text-gold" />
+              </div>
             </div>
           ))
         )}
@@ -1080,6 +1579,8 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
                 <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">{createError}</div>
               )}
 
+              <RecordedByPicker label="Created by (team member)" />
+
               <div>
                 <label className="block text-sm font-bold text-navy mb-1.5">Request Title</label>
                 <input
@@ -1098,7 +1599,7 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
                   onChange={(e) => setNewRequestForm(prev => ({ ...prev, entity: e.target.value }))}
                   className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold"
                 >
-                  {ENTITY_OPTIONS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                  {PROGRAMME_ENTITIES.map(opt => <option key={opt} value={opt}>{opt}</option>)}
                 </select>
               </div>
 
@@ -1111,7 +1612,7 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
                   className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold disabled:bg-slate-50"
                 >
                   <option value="">{loadingCreateData ? 'Loading request types...' : 'Select a request type...'}</option>
-                  {templates.map(t => <option key={t.id} value={t.id}>{TEMPLATE_DISPLAY_LABELS[t.id] || t.title}</option>)}
+                  {templates.filter(t => !RETIRED_TEMPLATE_IDS.includes(t.id)).map(t => <option key={t.id} value={t.id}>{TEMPLATE_DISPLAY_LABELS[t.id] || t.title}</option>)}
                 </select>
                 <p className="text-xs text-slate-400 mt-1">This determines the exact structured questions the client will be asked to answer.</p>
                 {templateLoadError && (
@@ -1119,52 +1620,57 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
                 )}
               </div>
 
-              <div>
-                <label className="block text-sm font-bold text-navy mb-1.5">Assigned Contributor <span className="font-normal text-slate-400">(optional)</span></label>
-                <select
-                  value={newRequestForm.contributorUserId}
-                  onChange={(e) => setNewRequestForm(prev => ({ ...prev, contributorUserId: e.target.value }))}
-                  disabled={loadingCreateData}
-                  className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold disabled:bg-slate-50"
-                >
-                  <option value="">Unassigned</option>
-                  {contributors.map(c => (
-                    <option key={c.user_id} value={c.user_id}>{c.display_name || c.user_id} ({c.entity_scope})</option>
-                  ))}
-                </select>
-                {!loadingCreateData && contributors.length === 0 ? (
-                  <p className="text-xs text-slate-400 mt-1.5">No active client contributors available yet. You can create this request now and assign a contributor later.</p>
-                ) : (
-                  <p className="text-xs text-slate-400 mt-1.5">You can create this request now and assign a contributor later.</p>
-                )}
-              </div>
+              {/* Assignment moved off the primary intake (V4A.16): the
+                  request is created first; "who at the client answers this"
+                  (Requested From) is a post-create triage action — the
+                  existing Assign Contributor control on the request detail.
+                  The backend fields (assigned_contributor_user_id,
+                  primary_approver_author_id) are preserved unchanged. */}
+              <p className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-500">
+                You can choose who at the client answers this after creating it (Assign Contributor on the request).
+              </p>
 
               <div>
-                <label className="block text-sm font-bold text-navy mb-1.5">Primary Approver <span className="font-normal text-slate-400">(optional)</span></label>
+                <label className="block text-sm font-bold text-navy mb-1.5">Related Delivery Item <span className="font-normal text-slate-400">(optional)</span></label>
                 <select
-                  value={newRequestForm.approverAuthorId}
-                  onChange={(e) => setNewRequestForm(prev => ({ ...prev, approverAuthorId: e.target.value }))}
-                  disabled={loadingCreateData}
-                  className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold disabled:bg-slate-50"
-                >
-                  <option value="">No approver set</option>
-                  {authors.map(a => <option key={a.id} value={a.id}>{a.display_name}</option>)}
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-sm font-bold text-navy mb-1.5">Client-Reported Urgency</label>
-                <select
-                  value={newRequestForm.clientReportedUrgency}
-                  onChange={(e) => setNewRequestForm(prev => ({ ...prev, clientReportedUrgency: e.target.value }))}
+                  value={newRequestForm.linkedTrackerItemId}
+                  onChange={(e) => setNewRequestForm(prev => ({ ...prev, linkedTrackerItemId: e.target.value }))}
                   className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold"
                 >
-                  {URGENCY_OPTIONS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                  <option value="">No linked delivery item</option>
+                  {trackerItemsForLinking
+                    .filter(t => t.entity === 'Both' || newRequestForm.entity === 'Both' || t.entity === newRequestForm.entity)
+                    .map(t => <option key={t.id} value={t.id}>{t.title} ({t.phase})</option>)
+                  }
                 </select>
+                <p className="text-xs text-slate-400 mt-1.5">Link this request directly to an active Phase 2 or Phase 3 delivery task.</p>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-bold text-navy mb-1.5">Source <span className="font-normal text-slate-400">(where did this need come from?)</span></label>
+                  <select
+                    value={newRequestForm.requirementSource}
+                    onChange={(e) => setNewRequestForm(prev => ({ ...prev, requirementSource: e.target.value }))}
+                    className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold"
+                  >
+                    {['Platform', 'WhatsApp', 'Email', 'Meeting', 'Phone Call', 'Other'].map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-navy mb-1.5">Urgency</label>
+                  <select
+                    value={newRequestForm.clientReportedUrgency}
+                    onChange={(e) => setNewRequestForm(prev => ({ ...prev, clientReportedUrgency: e.target.value }))}
+                    className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold"
+                  >
+                    {INPUT_URGENCY.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                  </select>
+                </div>
               </div>
 
               <div>
-                <label className="block text-sm font-bold text-navy mb-1.5">Brief / Context for the Client <span className="font-normal text-slate-400">(optional)</span></label>
+                <label className="block text-sm font-bold text-navy mb-1.5">Brief / Context of Request <span className="font-normal text-slate-400">(optional)</span></label>
                 <p className="text-xs text-slate-400 mb-1.5">Explain what you need the client to review, provide, confirm, or correct.</p>
                 <textarea
                   value={newRequestForm.contextNote}
@@ -1191,13 +1697,6 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
                 <p className="text-xs text-slate-400 mt-0.5">Attachments coming in V4A.1 — secure screenshot, PDF and document uploads will be added in the next collaboration enhancement.</p>
               </div>
 
-              {selectedAuthorId && (
-                <p className="text-xs text-slate-400">
-                  Created By: <span className="font-bold text-slate-600">
-                    {updateAuthors.find(a => a.id === selectedAuthorId)?.display_name || 'Selected Active Editor'}
-                  </span>
-                </p>
-              )}
 
               <div className="flex items-center justify-end gap-3 pt-2">
                 <button
@@ -1212,7 +1711,7 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
                   disabled={creating || loadingCreateData}
                   className="px-5 py-2 text-sm font-bold text-navy bg-gold hover:bg-gold/90 rounded-lg shadow-md shadow-gold/20 transition-all disabled:opacity-60"
                 >
-                  {creating ? 'Creating...' : 'Create Request'}
+                  {creating ? 'Creating...' : getRequestPrimaryActionLabel(newRequestForm.templateId, 'Create Request')}
                 </button>
               </div>
             </form>
@@ -1224,7 +1723,7 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
         <div className="fixed inset-0 z-50 bg-navy/40 flex items-center justify-center p-4">
           <div className="bg-white rounded-xl shadow-xl max-w-lg w-full max-h-[90vh] overflow-y-auto">
             <div className="p-6 border-b border-slate-200 flex items-center justify-between">
-              <h2 className="text-xl font-bold text-navy">Submit Requirement / Change</h2>
+              <h2 className="text-xl font-bold text-navy">I Have a Request</h2>
               <button onClick={() => setShowClientSubmitModal(false)} className="text-slate-400 hover:text-navy">
                 <X className="w-5 h-5" />
               </button>
@@ -1234,54 +1733,48 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
                 <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">{clientSubmitError}</div>
               )}
 
+              {/* PRIMARY SURFACE — the request in the client's own words,
+                  preferred timing, urgency, reference */}
               <div>
-                <label className="block text-sm font-bold text-navy mb-1.5">Request Title</label>
-                <input
-                  type="text"
-                  value={clientSubmitForm.title}
-                  onChange={(e) => setClientSubmitForm(prev => ({ ...prev, title: e.target.value }))}
-                  placeholder="e.g. Homepage wording change"
-                  className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-bold text-navy mb-1.5">What do you need help with?</label>
-                <select
-                  value={clientSubmitForm.templateId}
-                  onChange={(e) => setClientSubmitForm(prev => ({ ...prev, templateId: e.target.value }))}
-                  disabled={loadingCreateData}
-                  className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold disabled:bg-slate-50"
-                >
-                  <option value="">{loadingCreateData ? 'Loading request types...' : 'Select a request type...'}</option>
-                  {templates.map(t => <option key={t.id} value={t.id}>{TEMPLATE_DISPLAY_LABELS[t.id] || t.title}</option>)}
-                </select>
-                <p className="text-xs text-slate-400 mt-1">This determines the exact structured questions you'll be asked next.</p>
-                {templateLoadError && (
-                  <p className="text-sm text-red-600 mt-1.5">{templateLoadError}</p>
-                )}
-              </div>
-
-              <div>
-                <label className="block text-sm font-bold text-navy mb-1.5">Urgency</label>
-                <select
-                  value={clientSubmitForm.clientReportedUrgency}
-                  onChange={(e) => setClientSubmitForm(prev => ({ ...prev, clientReportedUrgency: e.target.value }))}
-                  className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold"
-                >
-                  {URGENCY_OPTIONS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-sm font-bold text-navy mb-1.5">Brief / Context for Embark <span className="font-normal text-slate-400">(optional)</span></label>
+                <label className="block text-sm font-bold text-navy mb-1.5">What is your request?</label>
                 <textarea
                   value={clientSubmitForm.contextNote}
-                  onChange={(e) => setClientSubmitForm(prev => ({ ...prev, contextNote: e.target.value }))}
-                  rows={3}
-                  placeholder="A short introduction before the structured questions on the next screen."
-                  className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold"
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    setClientSubmitForm(prev => ({
+                      ...prev,
+                      contextNote: value,
+                      title: clientTitleEdited ? prev.title : suggestTitleFromAsk(value),
+                    }));
+                  }}
+                  rows={4}
+                  autoFocus
+                  placeholder="Describe what you need from Embark in your own words — e.g. 'We need a job post for a junior analyst role.'"
+                  className="w-full bg-white border border-slate-300 rounded-lg p-3 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold"
                 />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-bold text-navy mb-1.5">When do you need this? <span className="font-normal text-slate-400">(optional)</span></label>
+                  <input
+                    type="date"
+                    value={clientSubmitForm.dateNeeded}
+                    onChange={(e) => setClientSubmitForm(prev => ({ ...prev, dateNeeded: e.target.value }))}
+                    className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold"
+                  />
+                  <p className="text-xs text-slate-400 mt-1">Helps Embark understand your preferred timing — not a confirmed delivery date.</p>
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-navy mb-1.5">Urgency</label>
+                  <select
+                    value={clientSubmitForm.clientReportedUrgency}
+                    onChange={(e) => setClientSubmitForm(prev => ({ ...prev, clientReportedUrgency: e.target.value }))}
+                    className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold"
+                  >
+                    {INPUT_URGENCY.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                  </select>
+                </div>
               </div>
 
               <div>
@@ -1293,6 +1786,52 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
                   placeholder="https://..."
                   className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold"
                 />
+              </div>
+
+              {/* MORE DETAILS — title + structured request type, collapsed */}
+              <div className="rounded-lg border border-slate-200">
+                <button
+                  type="button"
+                  onClick={() => setShowClientMoreDetails(v => !v)}
+                  className="flex w-full items-center justify-between px-4 py-2.5 text-sm font-bold text-navy hover:bg-slate-50 rounded-lg"
+                >
+                  More Details
+                  <ChevronRight className={cx('w-4 h-4 text-slate-400 transition-transform', showClientMoreDetails && 'rotate-90')} />
+                </button>
+                {showClientMoreDetails && (
+                  <div className="border-t border-slate-100 p-4 space-y-4">
+                    <div>
+                      <label className="block text-sm font-bold text-navy mb-1.5">Title <span className="font-normal text-slate-400">(auto-suggested — edit if needed)</span></label>
+                      <input
+                        type="text"
+                        value={clientSubmitForm.title}
+                        onChange={(e) => {
+                          setClientTitleEdited(true);
+                          setClientSubmitForm(prev => ({ ...prev, title: e.target.value }));
+                        }}
+                        placeholder="Suggested from your request text"
+                        className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-bold text-navy mb-1.5">What do you need help with?</label>
+                      <select
+                        value={clientSubmitForm.templateId}
+                        onChange={(e) => setClientSubmitForm(prev => ({ ...prev, templateId: e.target.value }))}
+                        disabled={loadingCreateData}
+                        className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold disabled:bg-slate-50"
+                      >
+                        <option value="">{loadingCreateData ? 'Loading request types...' : 'Select a request type...'}</option>
+                        {templates.filter(t => !RETIRED_TEMPLATE_IDS.includes(t.id)).map(t => <option key={t.id} value={t.id}>{TEMPLATE_DISPLAY_LABELS[t.id] || t.title}</option>)}
+                      </select>
+                      <p className="text-xs text-slate-400 mt-1">This determines the exact structured questions you'll be asked next.</p>
+                      {templateLoadError && (
+                        <p className="text-sm text-red-600 mt-1.5">{templateLoadError}</p>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-3">
@@ -1313,7 +1852,7 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
                   disabled={clientSubmitting || loadingCreateData}
                   className="px-5 py-2 text-sm font-bold text-navy bg-gold hover:bg-gold/90 rounded-lg shadow-md shadow-gold/20 transition-all disabled:opacity-60"
                 >
-                  {clientSubmitting ? 'Submitting...' : 'Continue'}
+                  {clientSubmitting ? 'Submitting...' : getRequestPrimaryActionLabel(clientSubmitForm.templateId, 'Submit Request')}
                 </button>
               </div>
             </form>
@@ -1326,8 +1865,8 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
           <div className="bg-white rounded-xl shadow-xl max-w-lg w-full max-h-[90vh] overflow-y-auto">
             <div className="p-6 border-b border-slate-200 flex items-center justify-between">
               <div>
-                <h2 className="text-xl font-bold text-navy">Log Client Requirement</h2>
-                <p className="text-xs text-slate-400 mt-0.5">Capture a requirement the client communicated outside the platform.</p>
+                <h2 className="text-xl font-bold text-navy">Log Request</h2>
+                <p className="text-xs text-slate-400 mt-0.5">Capture a request the client communicated outside the platform.</p>
               </div>
               <button onClick={() => setShowLogModal(false)} className="text-slate-400 hover:text-navy">
                 <X className="w-5 h-5" />
@@ -1338,115 +1877,182 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
                 <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">{logError}</div>
               )}
 
+              <RecordedByPicker />
+
+              {/* PRIMARY SURFACE — a normal WhatsApp request needs only these */}
               <div>
-                <label className="block text-sm font-bold text-navy mb-1.5">Request Title</label>
-                <input
-                  type="text"
-                  value={logForm.title}
-                  onChange={(e) => setLogForm(prev => ({ ...prev, title: e.target.value }))}
-                  placeholder="e.g. Business profile wording corrections"
-                  className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold"
+                <label className="block text-sm font-bold text-navy mb-1.5">Request</label>
+                <textarea
+                  value={logForm.contextNote}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    setLogForm(prev => ({
+                      ...prev,
+                      contextNote: value,
+                      // Auto-suggested title tracks the ask until the user
+                      // takes it over in More Details.
+                      title: logTitleEdited ? prev.title : suggestTitleFromAsk(value),
+                    }));
+                  }}
+                  rows={4}
+                  autoFocus
+                  placeholder="Describe the request in the client's own practical terms."
+                  className="w-full bg-white border border-slate-300 rounded-lg p-3 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold"
                 />
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-bold text-navy mb-1.5">Entity</label>
-                  <select
-                    value={logForm.entity}
-                    onChange={(e) => setLogForm(prev => ({ ...prev, entity: e.target.value }))}
-                    className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold"
-                  >
-                    {ENTITY_OPTIONS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-bold text-navy mb-1.5">Requirement Source</label>
-                  <select
-                    value={logForm.requirementSource}
-                    onChange={(e) => setLogForm(prev => ({ ...prev, requirementSource: e.target.value }))}
-                    className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold"
-                  >
-                    {['WhatsApp', 'Email', 'Meeting', 'Phone Call', 'Other'].map(opt => <option key={opt} value={opt}>{opt}</option>)}
-                  </select>
-                </div>
-              </div>
-
               <div>
-                <label className="block text-sm font-bold text-navy mb-1.5">Client / Source Person <span className="font-normal text-slate-400">(optional)</span></label>
+                <label className="block text-sm font-bold text-navy mb-1.5">Related Delivery Item <span className="font-normal text-slate-400">(optional)</span></label>
                 <select
-                  value={logForm.sourcePersonUserId}
-                  onChange={(e) => setLogForm(prev => ({ ...prev, sourcePersonUserId: e.target.value }))}
+                  value={logForm.linkedTrackerItemId}
+                  onChange={(e) => setLogForm(prev => ({ ...prev, linkedTrackerItemId: e.target.value }))}
                   disabled={loadingCreateData}
                   className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold disabled:bg-slate-50"
                 >
-                  <option value="">Unspecified</option>
-                  {contributors.map(c => (
-                    <option key={c.user_id} value={c.user_id}>{c.display_name || 'Unnamed contributor'}{c.entity_scope ? ` (${c.entity_scope})` : ''}</option>
-                  ))}
+                  <option value="">No linked delivery item</option>
+                  {trackerItemsForLinking.map(t => <option key={t.id} value={t.id}>{t.title} ({t.phase})</option>)}
                 </select>
-                <p className="text-xs text-slate-400 mt-1">Who communicated this requirement, where a client profile exists.</p>
-              </div>
-
-              <div>
-                <label className="block text-sm font-bold text-navy mb-1.5">What do you need help with?</label>
-                <select
-                  value={logForm.templateId}
-                  onChange={(e) => setLogForm(prev => ({ ...prev, templateId: e.target.value }))}
-                  disabled={loadingCreateData}
-                  className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold disabled:bg-slate-50"
-                >
-                  <option value="">{loadingCreateData ? 'Loading request types...' : 'Select a request type...'}</option>
-                  {templates.map(t => <option key={t.id} value={t.id}>{TEMPLATE_DISPLAY_LABELS[t.id] || t.title}</option>)}
-                </select>
-                {templateLoadError && (
-                  <p className="text-sm text-red-600 mt-1.5">{templateLoadError}</p>
-                )}
-                {GUIDED_REVIEW_CONFIGS[logForm.templateId] && (
-                  <p className="text-xs text-slate-400 mt-1">This is a guided review — after logging, you can capture the client's feedback page by page / slide by slide.</p>
+                {logForm.linkedTrackerItemId && (
+                  <p className="text-xs text-slate-400 mt-1">
+                    Entity derives from this delivery item{(() => {
+                      const li = trackerItemsForLinking.find(t => t.id === logForm.linkedTrackerItemId);
+                      return li?.entity ? `: ${li.entity}` : '';
+                    })()}.
+                  </p>
                 )}
               </div>
 
               <div>
-                <label className="block text-sm font-bold text-navy mb-1.5">Client-Reported Urgency</label>
+                <label className="block text-sm font-bold text-navy mb-1.5">Urgency</label>
                 <select
                   value={logForm.clientReportedUrgency}
                   onChange={(e) => setLogForm(prev => ({ ...prev, clientReportedUrgency: e.target.value }))}
                   className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold"
                 >
-                  {URGENCY_OPTIONS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                  {INPUT_URGENCY.map(opt => <option key={opt} value={opt}>{opt}</option>)}
                 </select>
               </div>
 
-              <div>
-                <label className="block text-sm font-bold text-navy mb-1.5">Brief / Context <span className="font-normal text-slate-400">(what exactly did the client say?)</span></label>
-                <textarea
-                  value={logForm.contextNote}
-                  onChange={(e) => setLogForm(prev => ({ ...prev, contextNote: e.target.value }))}
-                  rows={3}
-                  placeholder="Capture the client's requirement as accurately as possible, in their own words where you can."
-                  className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold"
-                />
+              {/* MORE DETAILS — provenance fields deferred, never removed */}
+              <div className="rounded-lg border border-slate-200">
+                <button
+                  type="button"
+                  onClick={() => setShowLogMoreDetails(v => !v)}
+                  className="flex w-full items-center justify-between px-4 py-2.5 text-sm font-bold text-navy hover:bg-slate-50 rounded-lg"
+                >
+                  More Details
+                  <ChevronRight className={cx('w-4 h-4 text-slate-400 transition-transform', showLogMoreDetails && 'rotate-90')} />
+                </button>
+                {showLogMoreDetails && (
+                  <div className="border-t border-slate-100 p-4 space-y-4">
+                    <div>
+                      <label className="block text-sm font-bold text-navy mb-1.5">Title <span className="font-normal text-slate-400">(auto-suggested — edit if needed)</span></label>
+                      <input
+                        type="text"
+                        value={logForm.title}
+                        onChange={(e) => {
+                          setLogTitleEdited(true);
+                          setLogForm(prev => ({ ...prev, title: e.target.value }));
+                        }}
+                        placeholder="Suggested from the request text"
+                        className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-bold text-navy mb-1.5">What do you need help with?</label>
+                      <select
+                        value={logForm.templateId}
+                        onChange={(e) => setLogForm(prev => ({ ...prev, templateId: e.target.value }))}
+                        disabled={loadingCreateData}
+                        className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold disabled:bg-slate-50"
+                      >
+                        <option value="">{loadingCreateData ? 'Loading request types...' : 'Select a request type...'}</option>
+                        {templates.filter(t => !RETIRED_TEMPLATE_IDS.includes(t.id)).map(t => <option key={t.id} value={t.id}>{TEMPLATE_DISPLAY_LABELS[t.id] || t.title}</option>)}
+                      </select>
+                      {templateLoadError && (
+                        <p className="text-sm text-red-600 mt-1.5">{templateLoadError}</p>
+                      )}
+                    </div>
+
+                    {!logForm.linkedTrackerItemId && (
+                      <div>
+                        <label className="block text-sm font-bold text-navy mb-1.5">Entity</label>
+                        <select
+                          value={logForm.entity}
+                          onChange={(e) => setLogForm(prev => ({ ...prev, entity: e.target.value }))}
+                          className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold"
+                        >
+                          {PROGRAMME_ENTITIES.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                        </select>
+                      </div>
+                    )}
+
+                    <div>
+                      <label className="block text-sm font-bold text-navy mb-1.5">Requester <span className="font-normal text-slate-400">(optional — who asked for this?)</span></label>
+                      <select
+                        value={logForm.sourcePersonUserId}
+                        onChange={(e) => setLogForm(prev => ({ ...prev, sourcePersonUserId: e.target.value }))}
+                        disabled={loadingCreateData}
+                        className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold disabled:bg-slate-50"
+                      >
+                        <option value="">Unspecified</option>
+                        <optgroup label="Team / client people">
+                          {updateAuthors.filter(a => a.is_active).map(a => (
+                            <option key={a.id} value={`author:${a.id}`}>{a.display_name}</option>
+                          ))}
+                        </optgroup>
+                        {contributors.length > 0 && (
+                          <optgroup label="Client sign-in accounts">
+                            {contributors.map(c => (
+                              <option key={c.user_id} value={`contrib:${c.user_id}`}>{c.display_name || 'Unnamed contributor'}{c.entity_scope ? ` (${c.entity_scope})` : ''}</option>
+                            ))}
+                          </optgroup>
+                        )}
+                      </select>
+                      <p className="text-xs text-slate-400 mt-1">A client sign-in account links the requester formally; a team/client name is recorded in the request context.</p>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-bold text-navy mb-1.5">Source <span className="font-normal text-slate-400">(how did this reach Embark?)</span></label>
+                      <select
+                        value={logForm.requirementSource}
+                        onChange={(e) => setLogForm(prev => ({ ...prev, requirementSource: e.target.value }))}
+                        className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold"
+                      >
+                        {['WhatsApp', 'Email', 'Meeting', 'Phone Call', 'Other'].map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-bold text-navy mb-1.5">When does the client need this? <span className="font-normal text-slate-400">(optional)</span></label>
+                      <input
+                        type="date"
+                        value={logForm.dateNeeded}
+                        onChange={(e) => setLogForm(prev => ({ ...prev, dateNeeded: e.target.value }))}
+                        className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold"
+                      />
+                      <p className="text-xs text-slate-400 mt-1">The client's preferred timing — recorded as context, not a confirmed delivery date.</p>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-bold text-navy mb-1.5">Reference Link <span className="font-normal text-slate-400">(optional)</span></label>
+                      <input
+                        type="url"
+                        value={logForm.referenceLink}
+                        onChange={(e) => setLogForm(prev => ({ ...prev, referenceLink: e.target.value }))}
+                        placeholder="https://..."
+                        className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold"
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
 
-              <div>
-                <label className="block text-sm font-bold text-navy mb-1.5">Reference Link <span className="font-normal text-slate-400">(optional)</span></label>
-                <input
-                  type="url"
-                  value={logForm.referenceLink}
-                  onChange={(e) => setLogForm(prev => ({ ...prev, referenceLink: e.target.value }))}
-                  placeholder="https://..."
-                  className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold"
-                />
-              </div>
-
-              {selectedAuthorId && (
-                <p className="text-xs text-slate-400">
-                  Logged By: <span className="font-bold text-slate-600">
-                    {updateAuthors.find(a => a.id === selectedAuthorId)?.display_name || 'Selected Active Editor'}
-                  </span>
-                </p>
+              {GUIDED_REVIEW_CONFIGS[logForm.templateId] && (
+                <p className="text-xs text-slate-400">This is a guided review — after logging, you can capture the client's feedback page by page / slide by slide.</p>
               )}
+
 
               <div className="flex items-center justify-end gap-3 pt-2">
                 <button
@@ -1461,7 +2067,7 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
                   disabled={logging || loadingCreateData}
                   className="px-5 py-2 text-sm font-bold text-navy bg-gold hover:bg-gold/90 rounded-lg shadow-md shadow-gold/20 transition-all disabled:opacity-60"
                 >
-                  {logging ? 'Logging...' : 'Log Requirement'}
+                  {logging ? 'Logging...' : getRequestPrimaryActionLabel(logForm.templateId, 'Log Request')}
                 </button>
               </div>
             </form>

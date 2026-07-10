@@ -176,6 +176,53 @@ export default function GuidedReviewForm({ request, config, isInternal, selected
     if (ok) advance();
   };
 
+  // Data-loss guard (V4A.16): typed feedback on the CURRENT item must never
+  // be silently discarded by navigation. Anything meaningful that differs
+  // from the saved entry is auto-saved before moving; a failed auto-save
+  // blocks the move and shows the failure instead of losing text.
+  const fieldsOfEntry = (entry) => ({
+    current_concern: entry?.current_concern || '',
+    remove_this: entry?.remove_this || '',
+    replacement_copy: entry?.replacement_copy || '',
+    copy_treatment: entry?.copy_treatment || '',
+    visual_direction: entry?.visual_direction || '',
+    structure_changes: entry?.structure_changes || '',
+    additional_comments: entry?.additional_comments || '',
+  });
+
+  const hasUnsavedTyping = () => {
+    if (!canEdit || showSummary || !currentItem) return false;
+    const saved = fieldsOfEntry(entries[currentItem.key]);
+    const differs = JSON.stringify(saved) !== JSON.stringify(fields);
+    return differs && (changesChoice === 'yes' || Object.values(fields).some(v => (v || '').trim() !== ''));
+  };
+
+  const saveIfDirty = async () => {
+    if (!hasUnsavedTyping()) return true;
+    return await persistEntry(currentItem, 'Changes Added', fields);
+  };
+
+  const navigateTo = async (i) => {
+    const ok = await saveIfDirty();
+    if (!ok) return; // failure is visible; the reviewer stays on the item
+    setShowSummary(false);
+    setIndex(i);
+  };
+
+  // Browser-level guard: refreshing or closing the tab with unsaved typing
+  // on the current item asks for confirmation first.
+  useEffect(() => {
+    const handler = (e) => {
+      if (hasUnsavedTyping()) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fields, changesChoice, entries, index, showSummary, canEdit]);
+
   const handleSubmitAll = async () => {
     if (counts.notReviewed > 0) return;
     setSubmitting(true);
@@ -205,24 +252,58 @@ export default function GuidedReviewForm({ request, config, isInternal, selected
     return <div className="m-6 p-4 bg-amber-50 border border-amber-200 rounded-lg text-amber-800 text-sm">Select an Active Editor in the sidebar to work on this review.</div>;
   }
 
+  // Navigator grouped by presentation section (43 slides read far better as
+  // seven labelled rows than one flat strip; the 16 profile pages have no
+  // groups and stay as a single row). Each group shows its own reviewed
+  // count so long reviews communicate section-level progress at a glance.
+  const navigatorGroups = (() => {
+    const groups = [];
+    items.forEach((it, i) => {
+      const label = it.group || null;
+      const last = groups[groups.length - 1];
+      if (!last || last.label !== label) groups.push({ label, entries: [] });
+      groups[groups.length - 1].entries.push({ item: it, index: i });
+    });
+    return groups;
+  })();
+
   const navigator = (
-    <div className="px-6 pt-4 flex flex-wrap gap-1.5">
-      {items.map((it, i) => {
-        const status = entries[it.key]?.review_status || 'Not Reviewed';
+    <div className="px-6 pt-4 space-y-2">
+      <div className="flex flex-wrap items-center gap-3 text-[10px] font-bold text-slate-400">
+        <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-slate-200 border border-slate-300" /> Not Reviewed</span>
+        <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-gold border border-gold" /> Changes Added</span>
+        <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-emerald-100 border border-emerald-300" /> No Changes Required</span>
+      </div>
+      {navigatorGroups.map((g, gi) => {
+        const reviewedInGroup = g.entries.filter(({ item }) => (entries[item.key]?.review_status || 'Not Reviewed') !== 'Not Reviewed').length;
         return (
-          <button
-            key={it.key}
-            type="button"
-            title={`${config.itemNoun} ${it.number}: ${it.title} — ${status}`}
-            onClick={() => { setShowSummary(false); setIndex(i); }}
-            className={cx(
-              "w-8 h-8 rounded-md border text-xs font-black transition",
-              STATUS_DOT[status],
-              !showSummary && i === index && "ring-2 ring-navy ring-offset-1"
+          <div key={g.label || gi}>
+            {g.label && (
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                {g.label.replace(/^Section \d+ — /, '')} <span className="text-slate-300">· {reviewedInGroup}/{g.entries.length}</span>
+              </p>
             )}
-          >
-            {it.number}
-          </button>
+            <div className="flex flex-wrap gap-1.5">
+              {g.entries.map(({ item: it, index: i }) => {
+                const status = entries[it.key]?.review_status || 'Not Reviewed';
+                return (
+                  <button
+                    key={it.key}
+                    type="button"
+                    title={`${config.itemNoun} ${it.number}: ${it.title} — ${status}`}
+                    onClick={() => navigateTo(i)}
+                    className={cx(
+                      "w-8 h-8 rounded-md border text-xs font-black transition",
+                      STATUS_DOT[status],
+                      !showSummary && i === index && "ring-2 ring-navy ring-offset-1"
+                    )}
+                  >
+                    {it.number}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
         );
       })}
     </div>
@@ -235,7 +316,9 @@ export default function GuidedReviewForm({ request, config, isInternal, selected
         <div className="p-6">
           <h3 className="text-lg font-bold text-navy mb-1">Review Summary</h3>
           {isSubmittedState && (
-            <p className="text-sm text-emerald-700 font-bold mb-3 flex items-center gap-1.5"><CheckCircle className="w-4 h-4" /> Submitted{request.submitted_at ? ` — ${new Date(request.submitted_at).toLocaleDateString('en-ZA')}` : ''}</p>
+            <p className="mb-3 flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-bold text-emerald-700">
+              <CheckCircle className="w-4 h-4" /> Submitted to Embark successfully{request.submitted_at ? ` on ${new Date(request.submitted_at).toLocaleDateString('en-ZA')}` : ''} — everything requested is recorded below.
+            </p>
           )}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
             <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-center">
@@ -358,6 +441,7 @@ export default function GuidedReviewForm({ request, config, isInternal, selected
             <GuidedField label="Replace with This Exact Wording" value={fields.replacement_copy} onChange={(v) => setFields(p => ({ ...p, replacement_copy: v }))} disabled={!canEdit} rows={4} />
             <div>
               <label className="block text-sm font-bold text-navy mb-1.5">Copy Treatment</label>
+              <p className="text-xs text-slate-400 mb-1.5">Tell Embark how strictly to treat your wording — use it exactly as supplied, tidy the grammar only, or professionally rewrite it for your approval.</p>
               <select
                 value={fields.copy_treatment}
                 onChange={(e) => setFields(p => ({ ...p, copy_treatment: e.target.value }))}
@@ -374,13 +458,21 @@ export default function GuidedReviewForm({ request, config, isInternal, selected
           </div>
         )}
 
-        {saveState === 'saved' && <p className="text-xs font-bold text-emerald-600 mb-3">Draft saved</p>}
-        {saveState === 'failed' && <p className="text-xs font-bold text-red-600 mb-3">Draft save failed — your last change was not stored. Please try again.</p>}
+        {saveState === 'saved' && (
+          <p className="mb-3 flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-700">
+            <CheckCircle className="w-3.5 h-3.5" /> {config.itemNoun} {currentItem.number} saved successfully.
+          </p>
+        )}
+        {saveState === 'failed' && (
+          <p className="mb-3 flex items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700">
+            <AlertCircle className="w-3.5 h-3.5" /> Save failed — your typing is still on screen and was NOT stored. Please try again.
+          </p>
+        )}
 
         <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-100">
           <button
             type="button"
-            onClick={() => (index > 0 ? setIndex(index - 1) : null)}
+            onClick={() => (index > 0 ? navigateTo(index - 1) : null)}
             disabled={index === 0}
             className="flex items-center gap-1.5 px-4 py-2 text-sm font-bold text-slate-600 hover:text-navy bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors disabled:opacity-40"
           >
@@ -389,7 +481,7 @@ export default function GuidedReviewForm({ request, config, isInternal, selected
           <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={() => setShowSummary(true)}
+              onClick={async () => { if (await saveIfDirty()) setShowSummary(true); }}
               className="px-4 py-2 text-sm font-bold text-slate-600 hover:text-navy bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
             >
               Review Summary
@@ -414,6 +506,13 @@ export default function GuidedReviewForm({ request, config, isInternal, selected
             )}
           </div>
         </div>
+
+        {canEdit && (
+          <p className="mt-3 text-xs text-slate-400">
+            Every {config.itemNoun.toLowerCase()} saves as you go — you can leave and resume anytime without losing feedback.
+            Nothing is sent to Embark until you review everything on the summary and submit.
+          </p>
+        )}
       </div>
     </div>
   );

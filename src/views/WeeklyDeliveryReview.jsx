@@ -1,21 +1,15 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { collaborationService } from '../services/collaborationService';
-import { Rocket, ChevronRight, ShieldCheck, Plus, X, CheckCircle, Send, AlertCircle } from 'lucide-react';
+import { Rocket, ChevronRight, ShieldCheck, Plus, X, CheckCircle, Send, AlertCircle, Link2 } from 'lucide-react';
 import { cx } from '../utils/cx';
+import { PROGRAMME_ENTITIES } from '../data/programmeContext';
+import { reviewResponsibility } from '../utils/responsibility';
+import { ResponsibilityBadge } from '../components/Badge';
+import { explainDbError } from '../utils/dbErrors';
 
-// Historical text-enum ratings (overall_delivery, communication_rating,
-// etc.) are no longer collected via an interactive scale — new submissions
-// use NumericRatingScale below (1-10, V4A.9). Old reviews' text ratings are
-// still shown, read-only, as plain text in the admin detail view (they are
-// never rewritten or coerced onto the new scale).
-const REVIEW_ENTITY_OPTIONS = ['Chasm Bridge Charity', 'Filament'];
+const REVIEW_ENTITY_OPTIONS = PROGRAMME_ENTITIES.filter(e => e !== 'Both');
 
-// True 1–10 scorecard scale (V4A.9), 10 = best. Replaces the mismatched
-// 4/5-option text-enum RatingScale below for new submissions — see
-// delivery_score/communication_score/... in weekly_review_assignment_
-// workflow.sql. Historical reviews keep displaying their original text
-// ratings (read-only); this component is only used for NEW submissions.
 function NumericRatingScale({ label, value, onChange, disabled }) {
   return (
     <div>
@@ -54,6 +48,14 @@ const STATUS_BADGE = {
   'Not Opened': 'bg-slate-100 text-slate-500 border-slate-200',
 };
 
+// Human date for register card titles — ISO strings are storage language,
+// not user language.
+function fmtDay(d) {
+  if (!d) return '';
+  const dt = new Date(`${d}T00:00:00`);
+  return Number.isNaN(dt.getTime()) ? d : dt.toLocaleDateString('en-ZA', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
 function getCurrentWeekRange() {
   const now = new Date();
   const day = now.getDay(); // 0 = Sunday
@@ -67,16 +69,13 @@ function getCurrentWeekRange() {
 }
 
 const emptySubmitForm = {
-  // 1–10 numeric scorecard (V4A.9) — see delivery_score/communication_score/
-  // etc. in weekly_review_assignment_workflow.sql. New submissions use only
-  // these; the historical text-enum columns are left untouched/unwritten.
   deliveryScore: '', communicationScore: '', timingScore: '', requirementUnderstandingScore: '',
   issueResolutionScore: '', approvalProcessScore: '',
   workedWell: '', couldImprove: '', didNotMeetExpectations: '',
   priority1: '', priority2: '', priority3: '',
 };
 
-export default function WeeklyDeliveryReview({ selectedAuthorId = "", authors = [] }) {
+export default function WeeklyDeliveryReview({ selectedAuthorId = "", authors = [], targetRecordId = null, onRecordTargetConsumed = null }) {
   const { profile, isAdmin, isClient } = useAuth();
   const isInternalOperator = !isClient;
   const [reviews, setReviews] = useState([]);
@@ -94,6 +93,7 @@ export default function WeeklyDeliveryReview({ selectedAuthorId = "", authors = 
   const [opening, setOpening] = useState(false);
   const [openError, setOpenError] = useState(null);
   const [openForm, setOpenForm] = useState({ entity: defaultEntity, periodStart: '', periodEnd: '', contributorUserId: '' });
+  const [workPreview, setWorkPreview] = useState([]);
 
   // Client: submit an assigned, still-pending review
   const [submitForm, setSubmitForm] = useState(emptySubmitForm);
@@ -105,9 +105,57 @@ export default function WeeklyDeliveryReview({ selectedAuthorId = "", authors = 
   const [creatingIssueFromReview, setCreatingIssueFromReview] = useState(false);
   const [issueFromReviewCreated, setIssueFromReviewCreated] = useState(false);
 
+  // Assignment State
+  const [assignFormUser, setAssignFormUser] = useState('');
+
+  const [loadError, setLoadError] = useState(null);
+  const [needsAuthorSelection, setNeedsAuthorSelection] = useState(false);
+
+  // Retention (V4A.17): Embark-only, server-enforced; archived reviews leave
+  // the default register with an internal reveal toggle.
+  const [showArchivedReviews, setShowArchivedReviews] = useState(false);
+  const [retentionBusy, setRetentionBusy] = useState(false);
+  const [retentionError, setRetentionError] = useState(null);
+  const isEmbarkEditor = !!authors.find(a => a.id === selectedAuthorId && a.organisation_label === 'Embark Digitals');
+
+  const handleArchiveReviewToggle = async (rev, archive) => {
+    setRetentionBusy(true);
+    setRetentionError(null);
+    try {
+      if (archive) {
+        await collaborationService.archiveInternalWeeklyReview({ authorId: selectedAuthorId, reviewId: rev.id });
+      } else {
+        await collaborationService.unarchiveInternalWeeklyReview({ authorId: selectedAuthorId, reviewId: rev.id });
+      }
+      setSelectedReview(null);
+      await loadReviews();
+    } catch (err) {
+      console.error(err);
+      setRetentionError(explainDbError(err, 'supabase/weekly_review_retention.sql'));
+    } finally {
+      setRetentionBusy(false);
+    }
+  };
+
+  const handleDeleteEmptyReview = async (rev) => {
+    if (!window.confirm(`Permanently delete the ${rev.entity} review for ${rev.review_period_start} – ${rev.review_period_end}? Only a never-submitted review with no feedback can be deleted.`)) return;
+    setRetentionBusy(true);
+    setRetentionError(null);
+    try {
+      await collaborationService.deleteInternalEmptyWeeklyReview({ authorId: selectedAuthorId, reviewId: rev.id });
+      setSelectedReview(null);
+      await loadReviews();
+    } catch (err) {
+      console.error(err);
+      setRetentionError(explainDbError(err, 'supabase/weekly_review_retention.sql'));
+    } finally {
+      setRetentionBusy(false);
+    }
+  };
+
   useEffect(() => {
     loadReviews();
-  }, [profile]);
+  }, [profile, selectedAuthorId]);
 
   useEffect(() => {
     if (!isAdmin) return;
@@ -116,18 +164,41 @@ export default function WeeklyDeliveryReview({ selectedAuthorId = "", authors = 
       .catch((err) => console.error(err));
   }, [isAdmin]);
 
+  useEffect(() => {
+    if (showOpenModal && openForm.entity && openForm.periodStart && openForm.periodEnd) {
+      collaborationService.getCurrentDeliveryTrackerItems(openForm.entity, openForm.periodStart, openForm.periodEnd)
+        .then(items => setWorkPreview(items || []))
+        .catch(console.warn);
+    }
+  }, [showOpenModal, openForm.entity, openForm.periodStart, openForm.periodEnd]);
+
   const contributorMap = useMemo(
     () => Object.fromEntries(contributors.map(c => [c.user_id, c.display_name || c.user_id])),
     [contributors]
   );
 
+  const fetchRegister = async () => {
+    if (profile) {
+      const data = await collaborationService.getReviews();
+      return data || [];
+    }
+    if (selectedAuthorId) {
+      return await collaborationService.getInternalWeeklyReviews(selectedAuthorId);
+    }
+    return null;
+  };
+
   const loadReviews = async () => {
     setLoading(true);
+    setLoadError(null);
     try {
-      const data = await collaborationService.getReviews().catch(() => []);
-      setReviews(data || []);
+      const rows = await fetchRegister();
+      setReviews(rows || []);
+      setNeedsAuthorSelection(rows === null);
     } catch (err) {
       console.error(err);
+      setReviews([]);
+      setLoadError('Unable to load weekly reviews. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -141,19 +212,38 @@ export default function WeeklyDeliveryReview({ selectedAuthorId = "", authors = 
     setHasUnresolvedIssue(false);
     setIssueFromReviewCreated(false);
     setLoading(true);
+    setAssignFormUser('');
     const isMyPending = isClient && !isAdmin
-      && rev.assigned_contributor_user_id === profile?.user_id
+      && (rev.assigned_contributor_user_id === profile?.user_id || !rev.assigned_contributor_user_id)
       && rev.review_status === 'Awaiting Client Review';
     try {
+      const useInternalReads = !profile && selectedAuthorId;
       const [fItems, linked] = await Promise.all([
-        collaborationService.getReviewFeedbackItems(rev.id).catch(() => []),
-        collaborationService.getReviewTrackerItems(rev.id).catch(() => []),
+        useInternalReads
+          ? collaborationService.getInternalWeeklyReviewFeedback(selectedAuthorId, rev.id).catch(() => [])
+          : collaborationService.getReviewFeedbackItems(rev.id).catch(() => []),
+        useInternalReads
+          ? collaborationService.getInternalWeeklyReviewTrackerItems(selectedAuthorId, rev.id).catch(() => [])
+          : collaborationService.getReviewTrackerItems(rev.id).catch(() => []),
       ]);
       setFeedbackItems(fItems);
       setLinkedTrackerItems(linked || []);
+
+      // Auto-populate assigning field
+      if (isInternalOperator) {
+        setAssignFormUser(rev.assigned_contributor_user_id || '');
+        if (contributors.length === 0) {
+           const contribs = await collaborationService.getInternalActiveClientContributors(selectedAuthorId);
+           setContributors(contribs || []);
+        }
+      }
+
       if (isMyPending) {
         const items = await collaborationService.getCurrentDeliveryTrackerItems(rev.entity, rev.review_period_start, rev.review_period_end).catch(() => []);
         setDeliveryItems(items || []);
+        // Automatically check tasks that the preview would have shown, if they are already linked
+        const linkedIds = (linked || []).map(l => l.tracker_item_id);
+        setSelectedTaskIds(linkedIds);
       }
     } catch (err) {
       console.error(err);
@@ -162,13 +252,28 @@ export default function WeeklyDeliveryReview({ selectedAuthorId = "", authors = 
     }
   };
 
+  // Direct record navigation (V4A.14): consume a targeted review id once the
+  // persona-correct register has loaded — select the real loaded row (which
+  // loads linked work + feedback and resolves scorecard vs detail view),
+  // then clear the consumed target.
+  useEffect(() => {
+    if (!targetRecordId || loading) return;
+    const found = reviews.find(r => r.id === targetRecordId);
+    if (found) handleSelectReview(found);
+    if (onRecordTargetConsumed) onRecordTargetConsumed();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [targetRecordId, loading, reviews]);
+
+  // Honest persistence: the local disposition only updates after a
+  // confirmed server write — a swallowed failure must never look saved.
   const handleDisposition = async (itemId, newDisposition) => {
     setActionLoading(true);
     try {
-      await collaborationService.updateFeedbackItemDisposition(itemId, { disposition: newDisposition }).catch(console.warn);
+      await collaborationService.updateFeedbackItemDisposition(itemId, { disposition: newDisposition });
       setFeedbackItems(prev => prev.map(fi => fi.id === itemId ? { ...fi, disposition: newDisposition } : fi));
     } catch (err) {
       console.error(err);
+      alert(err.message || 'The disposition could not be saved.');
     } finally {
       setActionLoading(false);
     }
@@ -195,14 +300,6 @@ export default function WeeklyDeliveryReview({ selectedAuthorId = "", authors = 
     setShowOpenModal(true);
     setLoadingContributors(true);
     try {
-      // A real authenticated admin session reads user_access_profiles
-      // directly (is_admin() already grants that under RLS). The no-session
-      // internal Active Editor workflow has no such session, so it goes
-      // through the narrow, Active-Editor-validated RPC instead — the same
-      // class of anon-RLS gap already fixed for the Client Input template
-      // picker and the contributor assignment control. Without an Active
-      // Editor selected yet, there is nothing valid to call — leave the
-      // list empty rather than attempt (and fail) the RPC.
       if (isAdmin) {
         const contribs = await collaborationService.getActiveClientContributors();
         setContributors(contribs || []);
@@ -223,9 +320,6 @@ export default function WeeklyDeliveryReview({ selectedAuthorId = "", authors = 
 
   const handleOpenReview = async (e) => {
     e.preventDefault();
-    // Specific, honest validation messages — a single combined "Entity,
-    // review period, and assigned contributor are required" made a missing
-    // contributor read as a date problem even when both dates were set.
     if (!openForm.entity) {
       setOpenError('Please select an entity.');
       return;
@@ -238,8 +332,17 @@ export default function WeeklyDeliveryReview({ selectedAuthorId = "", authors = 
       setOpenError('Please select an Active Editor in the sidebar to enable editing.');
       return;
     }
-    if (!openForm.contributorUserId) {
-      setOpenError('Please assign an active client contributor to this review.');
+    // Duplicate guard: one review per entity per period. Opening a second
+    // review for the same week creates two identical cards the client cannot
+    // tell apart — block it and point at the existing one instead.
+    const duplicate = reviews.find(r =>
+      !r.archived_at &&
+      r.entity === openForm.entity &&
+      r.review_period_start <= openForm.periodEnd &&
+      r.review_period_end >= openForm.periodStart
+    );
+    if (duplicate) {
+      setOpenError(`A ${duplicate.entity} review already covers ${duplicate.review_period_start} to ${duplicate.review_period_end} (${duplicate.review_status}). Open that review instead, or choose a different period.`);
       return;
     }
     setOpening(true);
@@ -247,40 +350,72 @@ export default function WeeklyDeliveryReview({ selectedAuthorId = "", authors = 
     try {
       let created;
       if (isInternalOperator) {
-        created = await collaborationService.openInternalWeeklyReview({
+        // Atomic internal open: creates review AND links work-preview items
+        // in one SECURITY DEFINER RPC — no post-create client-side loop.
+        created = await collaborationService.openInternalWeeklyReviewWithItems({
           authorId: selectedAuthorId,
           entity: openForm.entity,
           periodStart: openForm.periodStart,
           periodEnd: openForm.periodEnd,
-          contributorUserId: openForm.contributorUserId,
+          contributorUserId: openForm.contributorUserId || null,
+          // Pass validated Phase 2/3 work-preview ids; server validates each.
+          trackerItemIds: workPreview.length > 0 ? workPreview.map(i => i.id) : null,
         });
       } else {
         created = await collaborationService.createReview({
-        entity: openForm.entity,
-        review_period_start: openForm.periodStart,
-        review_period_end: openForm.periodEnd,
-        assigned_contributor_user_id: openForm.contributorUserId,
-        review_status: 'Awaiting Client Review',
-        opened_at: new Date().toISOString(),
-        submitted_at: null,
+          entity: openForm.entity,
+          review_period_start: openForm.periodStart,
+          review_period_end: openForm.periodEnd,
+          assigned_contributor_user_id: openForm.contributorUserId || null,
+          review_status: 'Awaiting Client Review',
+          opened_at: new Date().toISOString(),
+          submitted_at: null,
         });
+        // Authenticated admin path: retain existing safe direct junction inserts.
+        if (created && workPreview.length > 0) {
+          for (const item of workPreview) {
+            await collaborationService.linkReviewTrackerItem(created.id, item.id).catch(console.warn);
+          }
+        }
       }
+
+
       setShowOpenModal(false);
-      // weekly_delivery_reviews has no anon SELECT policy, so the no-session
-      // operator's refetch returns nothing — merge the returned row in so the
-      // just-opened review is visible immediately (see the same pattern in
-      // SupportIssues / ClientInputRequirements).
-      const fresh = await collaborationService.getReviews().catch(() => []);
-      if (created && !(fresh || []).some(r => r.id === created.id)) {
-        setReviews([created, ...(fresh || [])]);
-      } else {
-        setReviews(fresh || []);
+      try {
+        const rows = await fetchRegister();
+        if (created && rows !== null && !(rows || []).some(r => r.id === created.id)) {
+          setReviews([created, ...(rows || [])]);
+        } else {
+          setReviews(rows || (created ? [created] : []));
+        }
+      } catch (reloadErr) {
+        console.error(reloadErr);
+        if (created) setReviews(prev => (prev.some(r => r.id === created.id) ? prev : [created, ...prev]));
       }
     } catch (err) {
       console.error(err);
       setOpenError(err.message || 'Failed to open weekly review.');
     } finally {
       setOpening(false);
+    }
+  };
+
+  const handleAssignReviewer = async () => {
+    if (!selectedAuthorId) return;
+    setActionLoading(true);
+    try {
+      const updated = await collaborationService.assignInternalWeeklyReviewContributor({
+        authorId: selectedAuthorId,
+        reviewId: selectedReview.id,
+        contributorUserId: assignFormUser || null,
+      });
+      setSelectedReview(updated);
+      await loadReviews();
+    } catch (err) {
+      console.error(err);
+      alert(err.message || 'Failed to assign reviewer.');
+    } finally {
+      setActionLoading(false);
     }
   };
 
@@ -293,16 +428,12 @@ export default function WeeklyDeliveryReview({ selectedAuthorId = "", authors = 
     setActionLoading(true);
     setSubmitError(null);
     try {
-      // Link tracker items first, while the review is still "Awaiting Client
-      // Review" — the junction table's INSERT policy only permits linking
-      // during that status, so this must happen before the status flips to
-      // "Submitted" below.
       for (const taskId of selectedTaskIds) {
-        await collaborationService.linkReviewTrackerItem(selectedReview.id, taskId).catch(console.warn);
+        // Link them if not already linked
+        if (!linkedTrackerItems.some(li => li.tracker_item_id === taskId)) {
+          await collaborationService.linkReviewTrackerItem(selectedReview.id, taskId).catch(console.warn);
+        }
       }
-      // 1-10 numeric scorecard only (V4A.9) — the historical text-enum
-      // rating columns (overall_delivery, communication_rating, etc.) are
-      // deliberately left unwritten for new submissions, never fabricated.
       const updated = await collaborationService.updateReview(selectedReview.id, {
         delivery_score: submitForm.deliveryScore || null,
         communication_score: submitForm.communicationScore || null,
@@ -317,6 +448,7 @@ export default function WeeklyDeliveryReview({ selectedAuthorId = "", authors = 
         next_week_priority_2: submitForm.priority2 || null,
         next_week_priority_3: submitForm.priority3 || null,
         reviewer_user_id: profile?.user_id || null,
+        assigned_contributor_user_id: profile?.user_id || null, // V4A.12 Self-claim
         submitted_at: new Date().toISOString(),
         review_status: 'Submitted',
       });
@@ -361,7 +493,7 @@ export default function WeeklyDeliveryReview({ selectedAuthorId = "", authors = 
   }
 
   const isMyPendingReview = !!selectedReview && isClient && !isAdmin
-    && selectedReview.assigned_contributor_user_id === profile?.user_id
+    && (selectedReview.assigned_contributor_user_id === profile?.user_id || !selectedReview.assigned_contributor_user_id)
     && selectedReview.review_status === 'Awaiting Client Review';
 
   const isAwaitingOthers = !!selectedReview && selectedReview.review_status === 'Awaiting Client Review' && !isMyPendingReview;
@@ -508,18 +640,112 @@ export default function WeeklyDeliveryReview({ selectedAuthorId = "", authors = 
               <span className="bg-slate-100 px-2.5 py-1 rounded-full text-slate-600 font-medium">{selectedReview.entity}</span>
               <span>•</span>
               <span>{selectedReview.review_period_start} to {selectedReview.review_period_end}</span>
-              {selectedReview.assigned_contributor_user_id && (
+              {selectedReview.assigned_contributor_user_id ? (
                 <>
                   <span>•</span>
-                  <span>Assigned: {contributorMap[selectedReview.assigned_contributor_user_id] || 'Contributor'}</span>
+                  <span>Assigned: {selectedReview.assigned_contributor_name || contributorMap[selectedReview.assigned_contributor_user_id] || 'Contributor'}</span>
+                </>
+              ) : (
+                <>
+                  <span>•</span>
+                  <span>Unassigned</span>
                 </>
               )}
+              {selectedReview.archived_at && (
+                <span className="px-2.5 py-1 rounded-full font-medium border bg-slate-100 text-slate-500 border-slate-200">Archived</span>
+              )}
             </div>
+
+            {/* Retention — EMBARK DIGITALS ONLY (server re-verifies). A
+                never-submitted review with no feedback deletes; everything
+                else archives reversibly. Clients never see these. */}
+            {isInternalOperator && !isClient && isEmbarkEditor && (
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                {retentionError && (
+                  <p className="w-full rounded-lg border border-red-200 bg-red-50 p-2.5 text-xs text-red-700">{retentionError}</p>
+                )}
+                {selectedReview.review_status === 'Awaiting Client Review' && feedbackItems.length === 0 ? (
+                  <button
+                    onClick={() => handleDeleteEmptyReview(selectedReview)}
+                    disabled={retentionBusy}
+                    className="px-3 py-1.5 text-xs font-bold text-red-600 bg-red-50 hover:bg-red-100 border border-red-200 rounded-lg transition-colors disabled:opacity-60"
+                  >
+                    Delete Review
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => handleArchiveReviewToggle(selectedReview, !selectedReview.archived_at)}
+                    disabled={retentionBusy}
+                    className="px-3 py-1.5 text-xs font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors disabled:opacity-60"
+                  >
+                    {selectedReview.archived_at ? 'Unarchive' : 'Archive Review'}
+                  </button>
+                )}
+              </div>
+            )}
+            {isInternalOperator && !isClient && !isEmbarkEditor && (
+              <p className="mt-3 text-xs text-slate-400">
+                🔒 Deleting or archiving reviews is Embark Digitals only — switch the Active Editor / Recorded by to an Embark member.
+              </p>
+            )}
           </div>
 
+          {isInternalOperator && selectedReview.review_status === 'Awaiting Client Review' && (
+            <div className="p-4 bg-white border-b border-slate-200 flex flex-wrap items-center gap-4">
+              <span className="text-sm font-bold text-navy">Assign Reviewer:</span>
+              <select
+                value={assignFormUser}
+                onChange={e => setAssignFormUser(e.target.value)}
+                className="bg-slate-50 border border-slate-300 rounded p-1.5 text-sm w-64"
+              >
+                <option value="">Unassigned</option>
+                {contributors.map(c => (
+                  <option key={c.user_id} value={c.user_id}>{c.display_name || c.user_id}</option>
+                ))}
+              </select>
+              <button
+                onClick={handleAssignReviewer}
+                disabled={actionLoading || (!selectedReview.assigned_contributor_user_id && !assignFormUser) || (selectedReview.assigned_contributor_user_id === assignFormUser)}
+                className="px-3 py-1.5 text-xs font-bold bg-gold text-navy rounded shadow-sm hover:bg-gold/90 disabled:opacity-50"
+              >
+                Update Assignment
+              </button>
+              {contributors.length === 0 && (
+                <p className="w-full text-xs text-amber-700">
+                  This list shows client sign-in accounts, never team members/Active Editors — none exist yet.
+                  Each person must sign in once via Magic Link, then be activated under
+                  <span className="font-bold"> Admin &amp; Settings → Client Access</span>. Unassigned works meanwhile — the first eligible client to complete it claims it.
+                </p>
+              )}
+            </div>
+          )}
+
           {isAwaitingOthers ? (
-            <div className="p-6 text-slate-500">
-              This review has been opened and assigned. Awaiting the client contributor's submission.
+            <div className="p-6 space-y-4">
+              <p className="text-slate-500">
+                {selectedReview.assigned_contributor_user_id
+                  ? "This review has been opened and assigned. Awaiting the client contributor's submission."
+                  : 'This review is open and unassigned — the first eligible client contributor to complete it claims it.'}
+              </p>
+              {/* Internal instrument preview (V4A.15): Embark can always see
+                  the exact instrument it is measured by. No scores are
+                  invented — this renders the dimensions, never values. */}
+              {isInternalOperator && (
+                <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-4">
+                  <p className="text-xs font-black uppercase tracking-wide text-navy">What the client will score (1–10 each)</p>
+                  <ul className="mt-2 grid gap-1.5 text-sm text-slate-600 sm:grid-cols-2">
+                    <li>Delivery — were agreed outputs delivered?</li>
+                    <li>Communication</li>
+                    <li>Timing</li>
+                    <li>Requirement Understanding</li>
+                    <li>Issue Resolution</li>
+                    <li>Approval Process</li>
+                  </ul>
+                  <p className="mt-2 text-xs text-slate-400">
+                    Plus: what worked well, what to improve, unresolved issues (optionally raised as a support ticket), and next week's priorities.
+                  </p>
+                </div>
+              )}
             </div>
           ) : (
             <>
@@ -579,8 +805,8 @@ export default function WeeklyDeliveryReview({ selectedAuthorId = "", authors = 
                     <h3 className="text-sm font-bold text-navy uppercase tracking-wider">Feedback Relates To</h3>
                     <div className="flex flex-wrap gap-2">
                       {linkedTrackerItems.map(li => (
-                        <span key={li.id} className="text-xs font-bold px-2.5 py-1 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
-                          {li.tracker_items?.title || li.tracker_item_id}
+                        <span key={li.id} className="flex items-center gap-1 text-xs font-bold px-2.5 py-1 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
+                          <Link2 className="w-3 h-3" /> {li.tracker_items?.title || li.tracker_item_id}
                         </span>
                       ))}
                     </div>
@@ -589,9 +815,9 @@ export default function WeeklyDeliveryReview({ selectedAuthorId = "", authors = 
               </div>
 
               <div className="p-6 border-t border-slate-200 bg-slate-50/60">
-                <h3 className="text-sm font-bold text-navy uppercase tracking-wider mb-4">Normalised Feedback Items</h3>
+                <h3 className="text-sm font-bold text-navy uppercase tracking-wider mb-4">Feedback</h3>
                 {feedbackItems.length === 0 ? (
-                  <p className="text-slate-500">No normalised feedback items for this review.</p>
+                  <p className="text-slate-500">No individual feedback items for this review.</p>
                 ) : (
                   <div className="space-y-4">
                     {feedbackItems.map(item => (
@@ -651,6 +877,15 @@ export default function WeeklyDeliveryReview({ selectedAuthorId = "", authors = 
                   </button>
                 </div>
               )}
+              {/* Honest lifecycle-lock explanation: marking a review as
+                  Reviewed is a server-protected admin disposition — the
+                  no-session operator is told why and what to do, instead of
+                  the action silently not existing. */}
+              {!isAdmin && isInternalOperator && selectedReview.review_status === 'Submitted' && (
+                <div className="p-4 bg-slate-50 border-t border-slate-200 text-xs text-slate-500">
+                  🔒 Marking this review as Reviewed is an admin disposition — use <span className="font-bold">Secure Sign In</span> as admin to close it out.
+                </div>
+              )}
             </>
           )}
         </div>
@@ -659,13 +894,18 @@ export default function WeeklyDeliveryReview({ selectedAuthorId = "", authors = 
   }
 
   const currentWeek = getCurrentWeekRange();
+  // Archived reviews leave every operating lens (week status, pending list,
+  // default register) — recoverable via the internal Show-archived toggle.
+  const activeReviews = reviews.filter(r => !r.archived_at);
+  const archivedReviewCount = reviews.length - activeReviews.length;
+  const visibleReviews = showArchivedReviews ? reviews : activeReviews;
   const weekStatus = REVIEW_ENTITY_OPTIONS.map(entity => {
-    const review = reviews.find(r => r.entity === entity && r.review_period_start <= currentWeek.end && r.review_period_end >= currentWeek.start);
+    const review = activeReviews.find(r => r.entity === entity && r.review_period_start <= currentWeek.end && r.review_period_end >= currentWeek.start);
     return { entity, status: review ? review.review_status : 'Not Opened' };
   });
 
   const myPendingReviews = isClient && !isAdmin
-    ? reviews.filter(r => r.assigned_contributor_user_id === profile?.user_id && r.review_status === 'Awaiting Client Review')
+    ? activeReviews.filter(r => (r.assigned_contributor_user_id === profile?.user_id || !r.assigned_contributor_user_id) && r.review_status === 'Awaiting Client Review')
     : [];
 
   return (
@@ -684,6 +924,18 @@ export default function WeeklyDeliveryReview({ selectedAuthorId = "", authors = 
           </button>
         )}
       </div>
+
+      {loadError && (
+        <div className="mb-4 p-3 rounded-lg border border-red-200 bg-red-50 text-red-700 text-sm flex flex-wrap items-center justify-between gap-2">
+          <span>{loadError}</span>
+          <button type="button" onClick={loadReviews} className="text-xs font-bold underline">Retry</button>
+        </div>
+      )}
+      {needsAuthorSelection && !loadError && (
+        <div className="mb-4 p-3 rounded-lg border border-amber-200 bg-amber-50 text-amber-800 text-sm">
+          Select an Active Editor in the sidebar to load the weekly review register.
+        </div>
+      )}
 
       {isInternalOperator && (
         <div className="mb-6 grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -713,8 +965,20 @@ export default function WeeklyDeliveryReview({ selectedAuthorId = "", authors = 
         </div>
       )}
 
+      {!isClient && archivedReviewCount > 0 && (
+        <div className="mb-3 flex justify-end">
+          <button
+            type="button"
+            onClick={() => setShowArchivedReviews(v => !v)}
+            className="text-xs font-bold text-slate-500 underline hover:text-navy"
+          >
+            {showArchivedReviews ? 'Hide archived' : `Show archived (${archivedReviewCount})`}
+          </button>
+        </div>
+      )}
+
       <div className="grid gap-4">
-        {reviews.length === 0 ? (
+        {visibleReviews.length === 0 ? (
           <div className="text-center p-12 bg-slate-50 rounded-xl border border-slate-200 border-dashed">
             <Rocket className="w-12 h-12 text-slate-300 mx-auto mb-4" />
             <h3 className="text-lg font-bold text-navy">
@@ -735,7 +999,7 @@ export default function WeeklyDeliveryReview({ selectedAuthorId = "", authors = 
             )}
           </div>
         ) : (
-          reviews.map(rev => (
+          visibleReviews.map(rev => (
             <div
               key={rev.id}
               onClick={() => handleSelectReview(rev)}
@@ -747,16 +1011,25 @@ export default function WeeklyDeliveryReview({ selectedAuthorId = "", authors = 
                 </div>
                 <div>
                   <h3 className="text-lg font-bold text-navy">
-                    Week of {rev.review_period_start}
+                    Week of {fmtDay(rev.review_period_start)}
                   </h3>
                   <div className="flex flex-wrap items-center gap-3 mt-2 text-sm text-slate-500">
                     <span>{rev.entity}</span>
                     <span>•</span>
+                    <ResponsibilityBadge value={reviewResponsibility(rev)} />
+                    {rev.archived_at && (
+                      <span className="px-2 py-0.5 rounded-full text-xs font-bold border bg-slate-100 text-slate-500 border-slate-200">Archived</span>
+                    )}
                     <span className={cx("px-2 py-0.5 rounded-full text-xs font-bold border", STATUS_BADGE[rev.review_status] || STATUS_BADGE['Not Opened'])}>{rev.review_status}</span>
-                    {isInternalOperator && rev.assigned_contributor_user_id && (
+                    {isInternalOperator && rev.assigned_contributor_user_id ? (
                       <>
                         <span>•</span>
-                        <span>Assigned: {contributorMap[rev.assigned_contributor_user_id] || 'Contributor'}</span>
+                        <span>Assigned: {rev.assigned_contributor_name || contributorMap[rev.assigned_contributor_user_id] || 'Contributor'}</span>
+                      </>
+                    ) : isInternalOperator && (
+                      <>
+                        <span>•</span>
+                        <span>Unassigned</span>
                       </>
                     )}
                     {rev.overall_delivery && (
@@ -776,7 +1049,7 @@ export default function WeeklyDeliveryReview({ selectedAuthorId = "", authors = 
 
       {showOpenModal && (
         <div className="fixed inset-0 z-50 bg-navy/40 flex items-center justify-center p-4 overflow-y-auto">
-          <div className="bg-white rounded-xl shadow-xl max-w-lg w-full max-h-[90vh] overflow-y-auto my-8">
+          <div className="bg-white rounded-xl shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto my-8">
             <div className="p-6 border-b border-slate-200 flex items-center justify-between">
               <h2 className="text-xl font-bold text-navy">Open Weekly Review</h2>
               <button onClick={() => setShowOpenModal(false)} className="text-slate-400 hover:text-navy">
@@ -828,21 +1101,41 @@ export default function WeeklyDeliveryReview({ selectedAuthorId = "", authors = 
                   disabled={loadingContributors || contributors.length === 0}
                   className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold disabled:bg-slate-50"
                 >
-                  <option value="">{loadingContributors ? 'Loading contributors...' : 'Select a contributor...'}</option>
+                  <option value="">Unassigned (Optional)</option>
                   {contributors.map(c => (
                     <option key={c.user_id} value={c.user_id}>{c.display_name || c.user_id} ({c.entity_scope})</option>
                   ))}
                 </select>
                 {!loadingContributors && contributors.length === 0 && (
-                  <p className="text-sm text-red-600 mt-1.5">
-                    {!isAdmin && !selectedAuthorId
-                      ? 'Select an Active Editor first.'
-                      : contributorsLoadError
-                        ? 'Unable to load contributors. Please try again.'
-                        : 'No active client contributors available.'}
-                  </p>
+                  !isAdmin && !selectedAuthorId ? (
+                    <p className="text-sm text-red-600 mt-1.5">Select an Active Editor first.</p>
+                  ) : contributorsLoadError ? (
+                    <p className="text-sm text-red-600 mt-1.5">Unable to load contributors. Please try again.</p>
+                  ) : (
+                    <div className="mt-1.5 rounded-lg border border-amber-200 bg-amber-50 p-2.5 text-xs text-amber-800">
+                      <p className="font-bold">No client reviewer accounts are active yet.</p>
+                      <p className="mt-0.5">
+                        Reviewers are secure client sign-ins — not Active Editors. Provision them under
+                        <span className="font-bold"> Admin &amp; Settings → Client Access</span>. You can still open this
+                        review unassigned: the first eligible client to complete it claims it.
+                      </p>
+                    </div>
+                  )
                 )}
               </div>
+
+              {workPreview.length > 0 && (
+                <div>
+                  <label className="block text-sm font-bold text-navy mb-1.5">Work Preview (Auto-Linked)</label>
+                  <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 max-h-40 overflow-y-auto space-y-2">
+                    {workPreview.map(item => (
+                      <div key={item.id} className="text-sm text-slate-700 flex items-center gap-2">
+                         <Link2 className="w-3.5 h-3.5 text-emerald-600" /> {item.title}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               <div className="flex items-center justify-end gap-3 pt-2">
                 <button

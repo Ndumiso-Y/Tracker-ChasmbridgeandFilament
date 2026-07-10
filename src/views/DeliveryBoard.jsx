@@ -1,7 +1,7 @@
 import { useState, useMemo } from "react";
 import { Target, AlertTriangle, CheckCircle2, MoreHorizontal, Clock, ArrowRight } from "lucide-react";
 import { SectionHeader } from "../components/SectionHeader";
-import { Badge, StatusBadge, priorityStyles, statusStyles } from "../components/Badge";
+import { Badge, StatusBadge, priorityStyles, statusStyles, StatusLegend } from "../components/Badge";
 import { EmptyState } from "../components/EmptyState";
 import { cx } from "../utils/cx";
 import { TaskNotesModal, EditableText } from "./TaskCommandCenter";
@@ -54,6 +54,8 @@ export default function DeliveryBoard({
         title="Active Delivery Board"
         copy="Phase 2 & Phase 3 active delivery pipeline. Use lanes to manage immediate focus."
       />
+
+      <StatusLegend className="mt-4" />
 
       <div className="mt-6 flex gap-4 overflow-x-auto pb-4 custom-scrollbar h-[calc(100vh-220px)] items-start">
         {lanes.map(lane => {

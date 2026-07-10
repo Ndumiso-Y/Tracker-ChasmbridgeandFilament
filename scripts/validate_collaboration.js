@@ -331,13 +331,18 @@ function validate() {
     if (!supportJsx.includes('linked_tracker_item_id')) {
       errors.push("SupportIssues.jsx does not use the existing linked_tracker_item_id relation for issue-to-task provenance");
     }
-    // Follow-up task creation must not bypass the Active Editor attribution
-    // model: it must require selectedAuthorId and record last_changed_by.
-    if (!/handleCreateFollowUp[\s\S]{0,400}selectedAuthorId/.test(supportJsx)) {
-      errors.push("SupportIssues.jsx 'Create Follow-Up Task' does not appear to require an Active Editor before creating a tracker_items row");
-    }
-    if (!/createFollowUpTask\(\{[\s\S]{0,400}last_changed_by/.test(supportJsx)) {
-      errors.push("SupportIssues.jsx 'Create Follow-Up Task' does not appear to attribute the new tracker_items row via last_changed_by");
+    // The issue→delivery disposition micro-workflow was retired with the
+    // simplified ticket intake (V4A.14): its frontend handlers/state must
+    // stay removed (dead code), while the createFollowUpTask service
+    // capability itself is retained for future wiring.
+    ['handleCreateFollowUp', 'handleLinkExisting', 'handleNoTaskRequired', 'deliveryActionMode'].forEach(dead => {
+      if (supportJsx.includes(dead)) {
+        errors.push(`SupportIssues.jsx still contains the retired dead disposition workflow: ${dead}`);
+      }
+    });
+    const serviceJsForFollowUp = fs.readFileSync(path.join(__dirname, '../src/services/collaborationService.js'), 'utf8');
+    if (!/createFollowUpTask\(/.test(serviceJsForFollowUp)) {
+      errors.push("collaborationService.js no longer retains the createFollowUpTask server capability");
     }
   }
 
@@ -648,11 +653,11 @@ function validate() {
     if (/>\s*New Input Request\s*</.test(clientInputJsxV2)) {
       errors.push("ClientInputRequirements.jsx still exposes the retired 'New Input Request' label");
     }
-    if (!/Submit Requirement \/ Change/.test(clientInputJsxV2)) {
-      errors.push("ClientInputRequirements.jsx is missing the client-originated 'Submit Requirement / Change' action");
+    if (!/I Have a Request/.test(clientInputJsxV2)) {
+      errors.push("ClientInputRequirements.jsx is missing the client-originated 'I Have a Request' action");
     }
-    if (!/isClient &&[\s\S]{0,300}Submit Requirement \/ Change/.test(clientInputJsxV2)) {
-      errors.push("ClientInputRequirements.jsx does not gate 'Submit Requirement / Change' behind an authenticated client_contributor (isClient)");
+    if (!/isClient &&[\s\S]{0,600}I Have a Request/.test(clientInputJsxV2)) {
+      errors.push("ClientInputRequirements.jsx does not gate 'I Have a Request' behind an authenticated client_contributor (isClient)");
     }
     const clientSubmitFnMatch = clientInputJsxV2.match(/const handleClientSubmitRequirement = async[\s\S]*?\n  \};\n/);
     if (!clientSubmitFnMatch) {
@@ -685,23 +690,58 @@ function validate() {
     }
   }
 
-  // 18. Product Journey Pass (V4A.9) — Client Input two-tab architecture,
-  // Filament review templates, Phase 1 historical completion, and the
-  // weekly review numeric scorecard. Static checks only.
+  // 18. Product Experience Pass (V4A.12) — the register is one list
+  // filtered by responsibility (who needs to act), derived from lifecycle
+  // status via src/utils/responsibility.js. Origin-based tabs are retired
+  // as primary navigation; request_origin remains visible card/detail
+  // metadata (provenance is interpreted, never destroyed).
   if (fs.existsSync(clientInputJsxPath)) {
     const clientInputJsxV3 = fs.readFileSync(clientInputJsxPath, 'utf8');
-    if (!/>\s*Client Requests\s*</.test(clientInputJsxV3) || !/>\s*Input Needed from Client\s*</.test(clientInputJsxV3)) {
-      errors.push("ClientInputRequirements.jsx is missing the two-tab Client Requests / Input Needed from Client information architecture");
+    if (!clientInputJsxV3.includes('requestResponsibility')) {
+      errors.push("ClientInputRequirements.jsx does not filter the register through the responsibility model");
     }
-    // The retired confusing "Client Flow" label must not remain in the UI.
-    if (/>\s*Client Flow\s*</.test(clientInputJsxV3)) {
-      errors.push("ClientInputRequirements.jsx still exposes the retired 'Client Flow' tab label");
-    }
-    if (!clientInputJsxV3.includes("activeTab === 'client-input'") || !clientInputJsxV3.includes("activeTab === 'client-flow'")) {
-      errors.push("ClientInputRequirements.jsx does not gate the request list/actions by the active tab");
+    ['Needs Embark', 'Needs Client', 'Drafts', 'Completed'].forEach(f => {
+      if (!clientInputJsxV3.includes(`'${f}'`)) {
+        errors.push(`ClientInputRequirements.jsx is missing the '${f}' operational filter`);
+      }
+    });
+    // The retired database-origin tab architecture must not return as
+    // primary navigation, and neither may the older "Client Flow" label.
+    if (/>\s*Client Flow\s*</.test(clientInputJsxV3) || clientInputJsxV3.includes("activeTab === 'client-flow'")) {
+      errors.push("ClientInputRequirements.jsx has reverted to origin-tab primary navigation");
     }
     if (!clientInputJsxV3.includes('request_origin')) {
-      errors.push("ClientInputRequirements.jsx tabs do not appear to filter by request_origin");
+      errors.push("ClientInputRequirements.jsx no longer shows request_origin provenance metadata");
+    }
+  }
+  // The responsibility interpretation layer itself.
+  const responsibilityPath = path.join(__dirname, '../src/utils/responsibility.js');
+  if (!fs.existsSync(responsibilityPath)) {
+    errors.push("Missing src/utils/responsibility.js");
+  } else {
+    const respJs = fs.readFileSync(responsibilityPath, 'utf8');
+    ['Needs Embark', 'Needs Client', 'Awaiting Client Confirmation'].forEach(v => {
+      if (!respJs.includes(`'${v}'`)) errors.push(`responsibility.js is missing the '${v}' responsibility value`);
+    });
+    if (!respJs.includes('ticketResponsibility') || !respJs.includes('requestResponsibility') || !respJs.includes('reviewResponsibility')) {
+      errors.push("responsibility.js is missing one of the three derivation helpers");
+    }
+  }
+  // The operating home must exist, read canonical services only, and
+  // never define its own persisted store.
+  const attentionPath = path.join(__dirname, '../src/components/NeedsAttention.jsx');
+  if (!fs.existsSync(attentionPath)) {
+    errors.push("Missing src/components/NeedsAttention.jsx operating home");
+  } else {
+    const attentionJs = fs.readFileSync(attentionPath, 'utf8');
+    if (!attentionJs.includes('collaborationService')) {
+      errors.push("NeedsAttention.jsx does not read from the canonical collaboration service");
+    }
+    if (/from\s+['"]\.\.\/lib\/supabase['"]/.test(attentionJs)) {
+      errors.push("NeedsAttention.jsx must not query Supabase directly — it derives from canonical service reads");
+    }
+    if (!attentionJs.includes('getInternalSupportTickets') || !attentionJs.includes('getInternalClientInputRequests') || !attentionJs.includes('getInternalWeeklyReviews')) {
+      errors.push("NeedsAttention.jsx does not use the author-validated internal reads for the no-session operator");
     }
   }
 
@@ -939,9 +979,23 @@ function validate() {
   } else {
     const cfg = fs.readFileSync(guidedConfigPath, 'utf8');
     const pageCount = (cfg.match(/key: 'page-/g) || []).length;
-    const slideCount = (cfg.match(/key: 'slide-/g) || []).length;
     if (pageCount !== 16) errors.push(`guidedReviewConfigs.js defines ${pageCount} Company Profile pages, expected 16`);
-    if (slideCount !== 43) errors.push(`guidedReviewConfigs.js defines ${slideCount} presentation slides, expected 43`);
+    // Version-aware slide counts (V4A.16): the historical v1 inventory stays
+    // 43 (persisted reviews must remain readable) and the corrected v2
+    // inventory — rebuilt from the physical 61-slide presentation source —
+    // must be exactly 61. Never one blind global count.
+    const v1Start = cfg.indexOf("'template-filament-slides-review':");
+    const v2Start = cfg.indexOf("'template-filament-slides-review-v2':");
+    if (v1Start === -1 || v2Start === -1 || v2Start < v1Start) {
+      errors.push("guidedReviewConfigs.js is missing the versioned presentation configs (v1 historical + v2)");
+    } else {
+      const v1Block = cfg.slice(v1Start, v2Start);
+      const v2Block = cfg.slice(v2Start);
+      const v1Slides = (v1Block.match(/key: 'slide-/g) || []).length;
+      const v2Slides = (v2Block.match(/key: 'slide-/g) || []).length;
+      if (v1Slides !== 43) errors.push(`Historical presentation config defines ${v1Slides} slides, expected 43 (persisted reviews)`);
+      if (v2Slides !== 61) errors.push(`Presentation v2 config defines ${v2Slides} slides, expected 61 (physical deck)`);
+    }
   }
 
   const guidedFormPath = path.join(__dirname, '../src/components/GuidedReviewForm.jsx');
@@ -976,8 +1030,8 @@ function validate() {
     if (civ4.includes('mergeCreatedRequest')) {
       errors.push("ClientInputRequirements.jsx still uses the retired optimistic-only mergeCreatedRequest contract");
     }
-    if (!civ4.includes('Log Client Requirement')) {
-      errors.push("ClientInputRequirements.jsx is missing the internal 'Log Client Requirement' action");
+    if (!civ4.includes('Log Request')) {
+      errors.push("ClientInputRequirements.jsx is missing the internal 'Log Request' action");
     }
     if (!/handleLogRequirement[\s\S]{0,600}!selectedAuthorId/.test(civ4)) {
       errors.push("ClientInputRequirements.jsx Log Client Requirement does not require an Active Editor");
@@ -988,6 +1042,755 @@ function validate() {
     if (!civ4.includes("'Internally Logged Client Requirement'")) {
       errors.push("ClientInputRequirements.jsx does not distinguish internally logged client requirements in the Client Requests tab");
     }
+  }
+
+  // 20. Internal Operator Collaboration Reads (V4A.11) — Support & Weekly
+  // Review registers/detail must load through author-validated read RPCs
+  // for the no-session operator (same persistence contract as Client
+  // Input's V4A.10 fix). Static checks only.
+  const collabReadsMigrationPath = path.join(__dirname, '../supabase/internal_operator_collaboration_reads.sql');
+  if (!fs.existsSync(collabReadsMigrationPath)) {
+    errors.push("Missing supabase/internal_operator_collaboration_reads.sql");
+  } else {
+    const readsSql = fs.readFileSync(collabReadsMigrationPath, 'utf8');
+    const READ_FUNCTIONS = [
+      'get_internal_support_tickets',
+      'get_internal_weekly_reviews',
+      'get_internal_weekly_review_feedback',
+      'get_internal_weekly_review_tracker_items',
+    ];
+    READ_FUNCTIONS.forEach(fn => {
+      if (!readsSql.includes(`FUNCTION ${fn}(`)) {
+        errors.push(`internal_operator_collaboration_reads.sql is missing function: ${fn}`);
+      }
+      if (!new RegExp(`REVOKE ALL ON FUNCTION ${fn}\\([^)]*\\)\\s+FROM PUBLIC`).test(readsSql)) {
+        errors.push(`internal_operator_collaboration_reads.sql does not revoke PUBLIC execute on ${fn}`);
+      }
+      if (!new RegExp(`GRANT EXECUTE ON FUNCTION ${fn}\\([^)]*\\)\\s+TO anon, authenticated`).test(readsSql)) {
+        errors.push(`internal_operator_collaboration_reads.sql does not grant EXECUTE on ${fn} to anon, authenticated`);
+      }
+    });
+    const readsAuthorValidations = (readsSql.match(/FROM update_authors ua\s+WHERE ua\.id = p_author_id AND ua\.is_active = true/g) || []).length;
+    if (readsAuthorValidations !== READ_FUNCTIONS.length) {
+      errors.push(`internal_operator_collaboration_reads.sql validates update_authors ${readsAuthorValidations} times, expected ${READ_FUNCTIONS.length}`);
+    }
+    // Structural checks ignore "--" comment prose (the file's own header
+    // legitimately mentions the forbidden patterns while describing what it
+    // does NOT do) — same convention as the check-14 opSqlCode pattern.
+    const readsSqlCode = readsSql.split('\n').filter(line => !line.trim().startsWith('--')).join('\n');
+    if (/\bINSERT INTO\b|\bUPDATE\s+\w+\s+SET\b|\bDELETE FROM\b|DROP TABLE|TRUNCATE/i.test(readsSqlCode)) {
+      errors.push("internal_operator_collaboration_reads.sql must be strictly read-only");
+    }
+    if (/CREATE POLICY|FOR SELECT TO anon|USING \(true\)/i.test(readsSqlCode)) {
+      errors.push("internal_operator_collaboration_reads.sql must not add any RLS policy or anon table access");
+    }
+
+    const supportJsxV3 = fs.readFileSync(path.join(__dirname, '../src/views/SupportIssues.jsx'), 'utf8');
+    if (!supportJsxV3.includes('getInternalSupportTickets')) {
+      errors.push("SupportIssues.jsx does not load the no-session operator register through get_internal_support_tickets");
+    }
+    const weeklyJsxV3 = fs.readFileSync(path.join(__dirname, '../src/views/WeeklyDeliveryReview.jsx'), 'utf8');
+    if (!weeklyJsxV3.includes('getInternalWeeklyReviews')) {
+      errors.push("WeeklyDeliveryReview.jsx does not load the no-session operator register through get_internal_weekly_reviews");
+    }
+    if (!weeklyJsxV3.includes('getInternalWeeklyReviewFeedback') || !weeklyJsxV3.includes('getInternalWeeklyReviewTrackerItems')) {
+      errors.push("WeeklyDeliveryReview.jsx detail view does not use the internal feedback/linked-task read RPCs for the no-session operator");
+    }
+  }
+
+  // 21. Request -> Tracker Items Relationship (V4A.13)
+  const trackerLinkMigrationPath = path.join(__dirname, '../supabase/client_input_tracker_link.sql');
+  if (!fs.existsSync(trackerLinkMigrationPath)) {
+    errors.push("Missing supabase/client_input_tracker_link.sql migration");
+  } else {
+    const linkSql = fs.readFileSync(trackerLinkMigrationPath, 'utf8');
+    if (!/ADD COLUMN IF NOT EXISTS linked_tracker_item_id/.test(linkSql)) {
+      errors.push("client_input_tracker_link.sql does not additively add linked_tracker_item_id");
+    }
+
+    // V4A.13 Regression Check
+    const triggerMatch = linkSql.match(/CREATE TRIGGER trg_validate_client_input_tracker_link[\s\S]*?EXECUTE FUNCTION validate_client_input_tracker_link\(\);/i);
+    if (triggerMatch) {
+      if (triggerMatch[0].includes('TG_OP')) {
+        errors.push("client_input_tracker_link.sql must not contain TG_OP in the CREATE TRIGGER definition");
+      }
+    } else {
+      errors.push("client_input_tracker_link.sql is missing the validate_client_input_tracker_link CREATE TRIGGER statement");
+    }
+
+    const fnMatch = linkSql.match(/CREATE OR REPLACE FUNCTION validate_client_input_tracker_link[\s\S]*?LANGUAGE plpgsql[^;]*;/i);
+    if (fnMatch) {
+      const fnStr = fnMatch[0];
+      if (!fnStr.includes('RETURNS trigger')) errors.push("validate_client_input_tracker_link must RETURNS trigger");
+    } else {
+      errors.push("client_input_tracker_link.sql is missing FUNCTION validate_client_input_tracker_link");
+    }
+
+    if (!/FUNCTION link_internal_client_input_request_tracker_item/.test(linkSql)) {
+      errors.push("client_input_tracker_link.sql is missing the link_internal_client_input_request_tracker_item RPC");
+    }
+  }
+
+  if (fs.existsSync(clientInputJsxPath)) {
+    const civ4 = fs.readFileSync(clientInputJsxPath, 'utf8');
+    if (!civ4.includes('Related Delivery Item')) {
+      errors.push("ClientInputRequirements.jsx does not expose the 'Related Delivery Item' picker in the New Request form");
+    }
+    if (!civ4.includes('linkInternalClientInputRequestTrackerItem')) {
+      errors.push("ClientInputRequirements.jsx does not link tracker items via linkInternalClientInputRequestTrackerItem");
+    }
+  }
+
+  // 22. Weekly Review Atomic Internal Open + Tracker Linkage (V4A.12)
+  const assignmentClaimMigrationPath = path.join(__dirname, '../supabase/weekly_review_assignment_claim.sql');
+  if (!fs.existsSync(assignmentClaimMigrationPath)) {
+    // Legacy naming or missing entirely
+  } else {
+    const claimSql = fs.readFileSync(assignmentClaimMigrationPath, 'utf8');
+    if (!/FUNCTION open_internal_weekly_review_with_items/.test(claimSql)) {
+      errors.push("weekly_review_assignment_claim.sql is missing open_internal_weekly_review_with_items");
+    }
+    const openMatch = claimSql.match(/CREATE OR REPLACE FUNCTION open_internal_weekly_review\([\s\S]*?\$\$;/);
+    if (openMatch) {
+      if (!/p_assigned_contributor_user_id IS NOT NULL[\s\S]*?FROM user_access_profiles/.test(openMatch[0])) {
+        errors.push("open_internal_weekly_review does not validate the contributor (if supplied) against user_access_profiles");
+      }
+    }
+  }
+
+  const weeklyJsxV4 = fs.existsSync(weeklyJsxPathV2) ? fs.readFileSync(weeklyJsxPathV2, 'utf8') : '';
+  if (weeklyJsxV4) {
+    if (!weeklyJsxV4.includes('openInternalWeeklyReviewWithItems')) {
+      errors.push("WeeklyDeliveryReview.jsx internal flow does not use the atomic openInternalWeeklyReviewWithItems RPC");
+    }
+    if (/isInternalOperator[\s\S]{0,300}for \(const item of workPreview\)/.test(weeklyJsxV4)) {
+      errors.push("WeeklyDeliveryReview.jsx still contains the client-side post-create linkage loop for the internal operator flow — it must be atomic server-side");
+    }
+  }
+
+  // 23. Final Product Completion Pass (V4A.14) — direct record navigation,
+  // the client attention home, and progressive-disclosure intake. Static
+  // checks only; visual behaviour requires the product owner's live test.
+  const appJsxV14 = fs.readFileSync(path.join(__dirname, '../src/App.jsx'), 'utf8');
+
+  // 23a. Record-target mechanism: id-only navigation state, cleared after
+  // consumption; never a copied record object as cross-view truth.
+  if (!appJsxV14.includes('pendingRecordTarget') || !appJsxV14.includes('openWorkspaceRecord')) {
+    errors.push("App.jsx is missing the record-target navigation mechanism (pendingRecordTarget/openWorkspaceRecord)");
+  }
+  if (!/setPendingRecordTarget\(\{ view, recordId \}\)/.test(appJsxV14)) {
+    errors.push("App.jsx record target must store only { view, recordId } — never a full record object");
+  }
+  if (!/setPendingRecordTarget\(null\)/.test(appJsxV14)) {
+    errors.push("App.jsx record target is never cleared (consumeRecordTarget must setPendingRecordTarget(null))");
+  }
+  ['client_input', 'weekly_review', 'support', 'tasks'].forEach(view => {
+    if (!appJsxV14.includes(`targetRecordIdFor("${view}")`)) {
+      errors.push(`App.jsx does not pass a record target to the '${view}' view`);
+    }
+  });
+
+  // 23b. Each owning view consumes its target: finds the id in its own
+  // canonically loaded register, selects it, and reports consumption.
+  const consumingViews = [
+    ['ClientInputRequirements.jsx', 'handleSelectRequest'],
+    ['SupportIssues.jsx', 'handleSelectTicket'],
+    ['WeeklyDeliveryReview.jsx', 'handleSelectReview'],
+    ['TaskCommandCenter.jsx', 'setActiveNotesTaskId'],
+  ];
+  consumingViews.forEach(([file, selector]) => {
+    const src = fs.readFileSync(path.join(__dirname, `../src/views/${file}`), 'utf8');
+    if (!src.includes('targetRecordId')) {
+      errors.push(`${file} does not consume a targetRecordId`);
+    }
+    if (!src.includes('onRecordTargetConsumed')) {
+      errors.push(`${file} does not report record-target consumption`);
+    }
+    if (!new RegExp(`targetRecordId[\\s\\S]{0,600}${selector}`).test(src)) {
+      errors.push(`${file} does not open the targeted record through its existing detail interaction (${selector})`);
+    }
+  });
+
+  // 23c. NeedsAttention action targets carry record ids and contextual verbs.
+  const attentionJsV14 = fs.readFileSync(path.join(__dirname, '../src/components/NeedsAttention.jsx'), 'utf8');
+  if (!attentionJsV14.includes('recordId') || !attentionJsV14.includes('onOpenRecord')) {
+    errors.push("NeedsAttention.jsx items do not open exact records (recordId/onOpenRecord missing)");
+  }
+  ['Review Request', 'Continue Request', 'Review Ticket', 'Confirm Resolution', 'Complete Review', 'Review Feedback', 'Open Delivery Item'].forEach(verb => {
+    if (!attentionJsV14.includes(`"${verb}"`) && !attentionJsV14.includes(`'${verb}'`)) {
+      errors.push(`NeedsAttention.jsx is missing the contextual action verb: ${verb}`);
+    }
+  });
+
+  // 23d. Client attention home: derived from the client's own RLS reads via
+  // the collaboration service — no direct Supabase queries, no new store.
+  const clientHomePath = path.join(__dirname, '../src/views/ClientAttentionHome.jsx');
+  if (!fs.existsSync(clientHomePath)) {
+    errors.push("Missing src/views/ClientAttentionHome.jsx — the client contributor has no attention home");
+  } else {
+    const clientHomeJs = fs.readFileSync(clientHomePath, 'utf8');
+    if (!clientHomeJs.includes('collaborationService')) {
+      errors.push("ClientAttentionHome.jsx does not read from the canonical collaboration service");
+    }
+    if (/from\s+['"]\.\.\/lib\/supabase['"]/.test(clientHomeJs)) {
+      errors.push("ClientAttentionHome.jsx must not query Supabase directly");
+    }
+    if (!clientHomeJs.includes('getRequests') || !clientHomeJs.includes('getTickets') || !clientHomeJs.includes('getReviews')) {
+      errors.push("ClientAttentionHome.jsx does not derive from the client's RLS-owned request/ticket/review reads");
+    }
+    if (!clientHomeJs.includes('onOpenRecord')) {
+      errors.push("ClientAttentionHome.jsx does not open exact records through the shared record-target mechanism");
+    }
+    if (!clientHomeJs.includes('Needs Your Attention') || !clientHomeJs.includes('Waiting on Embark')) {
+      errors.push("ClientAttentionHome.jsx is missing its primary/secondary sections (Needs Your Attention / Waiting on Embark)");
+    }
+  }
+  // Client landing + navigation: clients land on and can navigate to the
+  // attention home; the internal Command Center stays internal-only.
+  if (!/setActiveView\("client_home"\)/.test(appJsxV14)) {
+    errors.push("App.jsx client contributor landing does not point to the client attention home");
+  }
+  if (!appJsxV14.includes("'Your Attention'")) {
+    errors.push("App.jsx client navigation is missing the 'Your Attention' entry");
+  }
+  if (!/id: 'client_home'[\s\S]{0,120}clientOnly: true/.test(appJsxV14)) {
+    errors.push("App.jsx 'Your Attention' is not gated to client contributors (clientOnly)");
+  }
+  if (!/id: 'dashboard'[\s\S]{0,120}adminOnly: true/.test(appJsxV14)) {
+    errors.push("App.jsx internal Command Center is no longer adminOnly — clients must not see it");
+  }
+
+  // 23e. Progressive-disclosure intake: the fast log surface leads with the
+  // client's ask; provenance fields live under More Details and the model
+  // keeps them all (request_origin/requirement_source untouched).
+  const clientInputJsxV14 = fs.readFileSync(clientInputJsxPath, 'utf8');
+  if (!clientInputJsxV14.includes('>Request</label>')) {
+    errors.push("ClientInputRequirements.jsx log form does not lead with the plain 'Request' field");
+  }
+  if (!clientInputJsxV14.includes('More Details')) {
+    errors.push("ClientInputRequirements.jsx intake forms are missing the collapsed More Details section");
+  }
+  if (!clientInputJsxV14.includes('suggestTitleFromAsk')) {
+    errors.push("ClientInputRequirements.jsx is missing the deterministic title suggestion helper");
+  }
+  if (!clientInputJsxV14.includes('What is your request?')) {
+    errors.push("ClientInputRequirements.jsx client form does not lead with 'What is your request?'");
+  }
+  if (!/requirementSource/.test(clientInputJsxV14) || !/sourcePersonUserId/.test(clientInputJsxV14)) {
+    errors.push("ClientInputRequirements.jsx progressive disclosure removed provenance fields from the model — they must be deferred, not deleted");
+  }
+
+  // 24. Final Product Strategy Pass (V4A.15) — persona-correct ticket
+  // actions, persona status language, honest write errors, view-mode
+  // grammar, attention eligibility, Filament Reviews lens, Client Access
+  // provisioning, and the request retention contract.
+  const supportJsxV15 = fs.readFileSync(path.join(__dirname, '../src/views/SupportIssues.jsx'), 'utf8');
+  // 24a. Ticket actions belong to the real persona: Embark disposition for
+  // every internal persona; confirm/reject only for the authenticated client.
+  // "!isAdmin" is never a synonym for "client".
+  if (!/isInternalOperator && !isResolved && !isClosed/.test(supportJsxV15)) {
+    errors.push("SupportIssues.jsx 'Mark as Resolved' is not gated to the internal operator persona");
+  }
+  if (!/isClient && isResolved/.test(supportJsxV15)) {
+    errors.push("SupportIssues.jsx client confirm/reject actions are not gated to the authenticated client (isClient)");
+  }
+  if (/\{!isAdmin && isResolved/.test(supportJsxV15)) {
+    errors.push("SupportIssues.jsx still uses !isAdmin as a synonym for the client persona on resolution actions");
+  }
+
+  // 24b. Persona status language: one central mapper, no raw enums on cards.
+  const statusLangPath = path.join(__dirname, '../src/utils/statusLanguage.js');
+  if (!fs.existsSync(statusLangPath)) {
+    errors.push("Missing src/utils/statusLanguage.js persona status mapper");
+  } else {
+    const statusLang = fs.readFileSync(statusLangPath, 'utf8');
+    if (!statusLang.includes('displayRequestStatus') || !statusLang.includes('With Embark') || !statusLang.includes('Submitted by Client — Review')) {
+      errors.push("statusLanguage.js does not map request statuses for both personas");
+    }
+  }
+  const civ15 = fs.readFileSync(clientInputJsxPath, 'utf8');
+  if (!civ15.includes('displayRequestStatus')) {
+    errors.push("ClientInputRequirements.jsx does not render statuses through the persona status mapper");
+  }
+
+  // 24c. Honest write errors: draft saves must never swallow failures, and
+  // the view must carry a visible response error state.
+  const saveDraftMatch = civ15.match(/const handleSaveDraft = async[\s\S]*?\n  \};/);
+  if (!saveDraftMatch) {
+    errors.push("Could not locate handleSaveDraft in ClientInputRequirements.jsx");
+  } else {
+    if (saveDraftMatch[0].includes('console.warn')) {
+      errors.push("handleSaveDraft still silently swallows write failures with console.warn");
+    }
+    if (!saveDraftMatch[0].includes('setResponseError')) {
+      errors.push("handleSaveDraft does not surface a visible error on failed persistence");
+    }
+  }
+
+  // 24d. View-mode grammar: structured responses render readable view mode
+  // (never disabled chrome) for non-editing personas, with a lock reason.
+  if (!civ15.includes('canEditResponses') || !civ15.includes('lockReason') || !civ15.includes('No response provided.')) {
+    errors.push("ClientInputRequirements.jsx is missing the view-mode / lock-reason grammar for structured responses");
+  }
+  if (!/!isGuidedReview && canEditResponses/.test(civ15)) {
+    errors.push("ClientInputRequirements.jsx save/submit actions are not gated on canEditResponses");
+  }
+
+  // 24e. Attention eligibility: attention = events, never ownership.
+  const attentionV15 = fs.readFileSync(path.join(__dirname, '../src/components/NeedsAttention.jsx'), 'utf8');
+  const embarkStatusesMatch = attentionV15.match(/const EMBARK_ATTENTION_STATUSES = \[([^\]]*)\]/);
+  if (!embarkStatusesMatch) {
+    errors.push("NeedsAttention.jsx no longer defines EMBARK_ATTENTION_STATUSES — attention eligibility is unpinned");
+  } else {
+    const list = embarkStatusesMatch[1];
+    if (!list.includes('Ready for Embark Review') || !list.includes('Changes Requested')) {
+      errors.push("EMBARK_ATTENTION_STATUSES is missing an arrival event status");
+    }
+    if (list.includes('In Production') || list.includes('Requirements Confirmed')) {
+      errors.push("EMBARK_ATTENTION_STATUSES includes ownership states — ownership is not attention");
+    }
+  }
+  if (!/const MAX_PER_GROUP = 5/.test(attentionV15)) {
+    errors.push("NeedsAttention.jsx group display limit is not 5");
+  }
+  if (!attentionV15.includes('rankAttention')) {
+    errors.push("NeedsAttention.jsx does not rank attention items deterministically");
+  }
+  if (!attentionV15.includes('archived_at')) {
+    errors.push("NeedsAttention.jsx does not exclude archived requests from the attention surface");
+  }
+
+  // 24f. Filament Reviews lens: dedicated discoverability over the SAME
+  // client_input_requests truth — no second store, no direct Supabase.
+  const filamentLensPath = path.join(__dirname, '../src/views/FilamentReviews.jsx');
+  if (!fs.existsSync(filamentLensPath)) {
+    errors.push("Missing src/views/FilamentReviews.jsx programme lens");
+  } else {
+    const lens = fs.readFileSync(filamentLensPath, 'utf8');
+    if (!lens.includes('template-filament-profile-review') || !lens.includes('template-filament-slides-review')) {
+      errors.push("FilamentReviews.jsx does not render both guided review programmes");
+    }
+    if (!lens.includes('collaborationService')) {
+      errors.push("FilamentReviews.jsx does not read through the canonical collaboration service");
+    }
+    if (/from\s+['"]\.\.\/lib\/supabase['"]/.test(lens)) {
+      errors.push("FilamentReviews.jsx must not query Supabase directly");
+    }
+    if (!lens.includes('onOpenRecord')) {
+      errors.push("FilamentReviews.jsx does not open exact records through the record-target mechanism");
+    }
+  }
+  const appJsxV15 = fs.readFileSync(path.join(__dirname, '../src/App.jsx'), 'utf8');
+  if (!appJsxV15.includes("id: 'filament_reviews'")) {
+    errors.push("App.jsx navigation is missing the Filament Reviews lens");
+  }
+  if (!/registerRequests/.test(civ15) || !/!GUIDED_REVIEW_CONFIGS\[r\.template_id\]/.test(civ15)) {
+    errors.push("ClientInputRequirements.jsx generic register does not exclude the guided review programmes by default");
+  }
+
+  // 24g. Client Access provisioning surface: authenticated-admin only,
+  // no service_role anywhere near the frontend.
+  const clientAccessPath = path.join(__dirname, '../src/views/ClientAccess.jsx');
+  if (!fs.existsSync(clientAccessPath)) {
+    errors.push("Missing src/views/ClientAccess.jsx provisioning surface");
+  } else {
+    const ca = fs.readFileSync(clientAccessPath, 'utf8');
+    if (!ca.includes('provisionClientContributor')) {
+      errors.push("ClientAccess.jsx does not provision through the narrow provision_client_contributor RPC");
+    }
+    if (ca.includes('service_role')) {
+      errors.push("ClientAccess.jsx references service_role — forbidden in the frontend");
+    }
+    if (!ca.includes('!session') || !ca.includes('isAdmin')) {
+      errors.push("ClientAccess.jsx does not gate on an authenticated admin session");
+    }
+  }
+  const serviceJsV15 = fs.readFileSync(path.join(__dirname, '../src/services/collaborationService.js'), 'utf8');
+  if (serviceJsV15.includes('service_role')) {
+    errors.push("collaborationService.js references service_role — forbidden in the frontend");
+  }
+  if (!appJsxV15.includes("id: 'client_access'")) {
+    errors.push("App.jsx navigation is missing Client Access under Admin & Settings");
+  }
+  if (!/id: 'client_access'[\s\S]{0,200}adminOnly: true/.test(appJsxV15)) {
+    errors.push("App.jsx Client Access nav entry is not adminOnly");
+  }
+
+  // 24h. New migration contract: client_access_and_request_retention.sql.
+  const retentionMigrationPath = path.join(__dirname, '../supabase/client_access_and_request_retention.sql');
+  if (!fs.existsSync(retentionMigrationPath)) {
+    errors.push("Missing supabase/client_access_and_request_retention.sql");
+  } else {
+    const retSql = fs.readFileSync(retentionMigrationPath, 'utf8');
+    const retSqlCode = retSql.split('\n').filter(line => !line.trim().startsWith('--')).join('\n');
+    // Support status correction: 'Open' joins the CHECK (live trigger and
+    // display mapping already treat it as canonical).
+    if (!/'New', 'Open', 'Acknowledged'/.test(retSqlCode)) {
+      errors.push("Retention migration does not add 'Open' to the support_tickets status CHECK");
+    }
+    // Provisioning security: admin-gated, role hard-coded, no anon grant,
+    // never fabricates identities.
+    const provisionMatch = retSql.match(/CREATE OR REPLACE FUNCTION provision_client_contributor[\s\S]*?\$\$;/);
+    if (!provisionMatch) {
+      errors.push("Retention migration is missing provision_client_contributor");
+    } else {
+      if (!/IF NOT is_admin\(\)/.test(provisionMatch[0])) {
+        errors.push("provision_client_contributor does not require is_admin()");
+      }
+      if (!/'client_contributor'/.test(provisionMatch[0]) || /p_role/.test(provisionMatch[0])) {
+        errors.push("provision_client_contributor role must be hard-coded client_contributor, never a parameter");
+      }
+      if (/INSERT INTO auth\.users/i.test(provisionMatch[0])) {
+        errors.push("provision_client_contributor must never fabricate auth.users identities");
+      }
+    }
+    if (/GRANT EXECUTE ON FUNCTION provision_client_contributor\([^)]*\)\s+TO anon/.test(retSqlCode)) {
+      errors.push("provision_client_contributor must never be granted to anon");
+    }
+    if (!/GRANT EXECUTE ON FUNCTION provision_client_contributor\([^)]*\)\s+TO authenticated/.test(retSqlCode)) {
+      errors.push("provision_client_contributor is not granted to authenticated");
+    }
+    // Retention: additive column; author-validated archive/unarchive/delete;
+    // delete restricted to never-assigned drafts; exactly one DELETE FROM.
+    if (!/ADD COLUMN IF NOT EXISTS archived_at timestamptz/.test(retSqlCode)) {
+      errors.push("Retention migration does not additively add client_input_requests.archived_at");
+    }
+    const retentionAuthorValidations = (retSqlCode.match(/FROM update_authors ua\s+WHERE ua\.id = p_author_id AND ua\.is_active = true/g) || []).length;
+    if (retentionAuthorValidations !== 4) {
+      errors.push(`Retention migration validates the Active Editor ${retentionAuthorValidations} times, expected 4 (archive, unarchive, draft delete, recreated register read)`);
+    }
+    if (!/v_status <> 'Draft'/.test(retSqlCode) || !/v_assigned IS NOT NULL/.test(retSqlCode)) {
+      errors.push("delete_internal_draft_client_input_request is missing the Draft-only / never-assigned guards");
+    }
+    const deleteCount = (retSqlCode.match(/DELETE FROM/g) || []).length;
+    if (deleteCount !== 1 || !/DELETE FROM client_input_requests WHERE id = p_request_id/.test(retSqlCode)) {
+      errors.push("Retention migration must contain exactly one narrowly-scoped draft DELETE");
+    }
+    if (/DROP TABLE|TRUNCATE/i.test(retSqlCode)) {
+      errors.push("Retention migration contains a destructive table operation");
+    }
+    if (/USING \(true\)|FOR ALL TO anon|service_role/.test(retSqlCode)) {
+      errors.push("Retention migration adds a forbidden broad policy or service_role reference");
+    }
+    if (!/archived_at timestamptz\s*\)/.test(retSql)) {
+      errors.push("Recreated get_internal_client_input_requests does not return archived_at");
+    }
+  }
+  // Retention UI + service wiring.
+  ['archiveInternalClientInputRequest', 'deleteInternalDraftClientInputRequest', 'provisionClientContributor'].forEach(fn => {
+    if (!serviceJsV15.includes(fn)) {
+      errors.push(`collaborationService.js is missing ${fn}`);
+    }
+  });
+  if (!civ15.includes('Delete Draft') || !civ15.includes("'Archived'")) {
+    errors.push("ClientInputRequirements.jsx is missing the Delete Draft action or the Archived recovery filter");
+  }
+
+  // 24i. Weekly review clarity: internal instrument preview + reviewer
+  // provisioning explainer.
+  const weeklyV15 = fs.readFileSync(path.join(__dirname, '../src/views/WeeklyDeliveryReview.jsx'), 'utf8');
+  if (!weeklyV15.includes('What the client will score')) {
+    errors.push("WeeklyDeliveryReview.jsx is missing the internal scorecard instrument preview");
+  }
+  if (!weeklyV15.includes('Client Access')) {
+    errors.push("WeeklyDeliveryReview.jsx empty reviewer state does not point to Client Access provisioning");
+  }
+
+  // 25. Final Workflow Corrections (V4A.16) — 61-slide presentation truth,
+  // Embark-only ticket retention, client-primary support intake, comment
+  // honesty, client-first request language, and the task status legend.
+  const civ16 = fs.readFileSync(clientInputJsxPath, 'utf8');
+  const supportV16 = fs.readFileSync(path.join(__dirname, '../src/views/SupportIssues.jsx'), 'utf8');
+  const badgeV16 = fs.readFileSync(path.join(__dirname, '../src/components/Badge.jsx'), 'utf8');
+  const pcV16 = fs.readFileSync(path.join(__dirname, '../src/data/programmeContext.js'), 'utf8');
+
+  // 25a. Presentation v2 contracts: retired v1 never offered for new
+  // reviews; v2 action label exists; lens spans both versions. The generic
+  // 'template-presentation' is retired too — it duplicated the guided
+  // Filament Presentation Review inside the same creation pickers.
+  {
+    const retiredMatch = pcV16.match(/RETIRED_TEMPLATE_IDS\s*=\s*\[([^\]]*)\]/);
+    const retiredIds = retiredMatch ? retiredMatch[1] : '';
+    if (!retiredIds.includes("'template-filament-slides-review'")) {
+      errors.push("programmeContext.js does not retire the 43-slide presentation template from new creation");
+    }
+    if (!retiredIds.includes("'template-presentation'")) {
+      errors.push("programmeContext.js does not retire the generic 'template-presentation' duplicate of the guided presentation review");
+    }
+    if (retiredIds.includes("'template-filament-slides-review-v2'")) {
+      errors.push("programmeContext.js must NOT retire the v2 (61-slide) presentation template");
+    }
+  }
+  if (!pcV16.includes("'template-filament-slides-review-v2': 'Next: Review Presentation'")) {
+    errors.push("programmeContext.js is missing the v2 presentation guided action label");
+  }
+  const retiredPickerFilters = (civ16.match(/templates\.filter\(t => !RETIRED_TEMPLATE_IDS\.includes\(t\.id\)\)/g) || []).length;
+  if (retiredPickerFilters !== 3) {
+    errors.push(`ClientInputRequirements.jsx filters retired templates in ${retiredPickerFilters} pickers, expected 3 (client / log / request-input)`);
+  }
+  const lensV16 = fs.readFileSync(path.join(__dirname, '../src/views/FilamentReviews.jsx'), 'utf8');
+  if (!lensV16.includes('template-filament-slides-review-v2')) {
+    errors.push("FilamentReviews.jsx does not surface the v2 61-slide presentation programme");
+  }
+
+  // 25b. Presentation migration: version-aware gates — v2 = 61 added, and
+  // the 16 / historical 43 mappings preserved (no blind 43→61 replacement).
+  const presMigrationPath = path.join(__dirname, '../supabase/filament_presentation_61_slide_review.sql');
+  if (!fs.existsSync(presMigrationPath)) {
+    errors.push("Missing supabase/filament_presentation_61_slide_review.sql");
+  } else {
+    const presSql = fs.readFileSync(presMigrationPath, 'utf8');
+    const presSqlCode = presSql.split('\n').filter(line => !line.trim().startsWith('--')).join('\n');
+    const v2Gates = (presSqlCode.match(/WHEN 'template-filament-slides-review-v2' THEN 61/g) || []).length;
+    const v1Gates = (presSqlCode.match(/WHEN 'template-filament-slides-review' THEN 43/g) || []).length;
+    const profileGates = (presSqlCode.match(/WHEN 'template-filament-profile-review' THEN 16/g) || []).length;
+    if (v2Gates !== 2) errors.push(`Presentation migration defines the 61 gate ${v2Gates} times, expected 2 (submit RPC + trigger)`);
+    if (v1Gates !== 2) errors.push("Presentation migration does not preserve the historical 43 gate in both functions — backward compatibility broken");
+    if (profileGates !== 2) errors.push("Presentation migration does not preserve the 16-page profile gate in both functions");
+    if (!/INSERT INTO client_input_templates[\s\S]{0,200}template-filament-slides-review-v2/.test(presSqlCode)) {
+      errors.push("Presentation migration does not seed the v2 template row");
+    }
+    if (/DROP TABLE|TRUNCATE|DELETE FROM/i.test(presSqlCode)) {
+      errors.push("Presentation migration contains a destructive operation");
+    }
+  }
+
+  // 25c. Ticket retention migration: Embark-only authority enforced
+  // server-side; delete restricted to New/Open zero-history tickets.
+  const ticketRetMigrationPath = path.join(__dirname, '../supabase/support_ticket_retention.sql');
+  if (!fs.existsSync(ticketRetMigrationPath)) {
+    errors.push("Missing supabase/support_ticket_retention.sql");
+  } else {
+    const trSql = fs.readFileSync(ticketRetMigrationPath, 'utf8');
+    const trSqlCode = trSql.split('\n').filter(line => !line.trim().startsWith('--')).join('\n');
+    const embarkChecks = (trSqlCode.match(/organisation_label = 'Embark Digitals'/g) || []).length;
+    if (embarkChecks !== 3) {
+      errors.push(`Ticket retention migration enforces Embark-only authority ${embarkChecks} times, expected 3 (archive, unarchive, delete)`);
+    }
+    if (!/ADD COLUMN IF NOT EXISTS archived_at timestamptz/.test(trSqlCode)) {
+      errors.push("Ticket retention migration does not additively add support_tickets.archived_at");
+    }
+    if (!/NOT IN \('New', 'Open'\)/.test(trSqlCode) || !/v_comment_count > 0/.test(trSqlCode)) {
+      errors.push("delete_internal_test_support_ticket is missing the New/Open + zero-conversation guards");
+    }
+    const trDeletes = (trSqlCode.match(/DELETE FROM/g) || []).length;
+    if (trDeletes !== 1 || !/DELETE FROM support_tickets WHERE id = p_ticket_id/.test(trSqlCode)) {
+      errors.push("Ticket retention migration must contain exactly one narrowly-scoped ticket DELETE");
+    }
+    if (/DROP TABLE|TRUNCATE/i.test(trSqlCode)) {
+      errors.push("Ticket retention migration contains a destructive table operation");
+    }
+    if (!/archived_at timestamptz\s*\)/.test(trSql)) {
+      errors.push("Recreated get_internal_support_tickets does not return archived_at");
+    }
+  }
+  ['archiveInternalSupportTicket', 'deleteInternalTestSupportTicket'].forEach(fn => {
+    if (!fs.readFileSync(path.join(__dirname, '../src/services/collaborationService.js'), 'utf8').includes(fn)) {
+      errors.push(`collaborationService.js is missing ${fn}`);
+    }
+  });
+  // Clients must never see removal actions; the UI additionally requires an
+  // Embark editor before rendering them.
+  if (!/isInternalOperator && !isClient && isEmbarkEditor/.test(supportV16)) {
+    errors.push("SupportIssues.jsx ticket removal actions are not gated to Embark-only internal personas");
+  }
+  if (/isClient[\s\S]{0,120}(Delete Ticket|Archive Ticket)/.test(supportV16.replace(/!isClient/g, 'NOTCLIENT'))) {
+    errors.push("SupportIssues.jsx appears to expose a removal action to the client persona");
+  }
+
+  // 25d. Support intake is client-primary; Embark records on behalf only.
+  if (!/isClient &&[\s\S]{0,400}Report an Issue/.test(supportV16)) {
+    errors.push("SupportIssues.jsx client-primary 'Report an Issue' action is missing or ungated");
+  }
+  if (!supportV16.includes('Log a Ticket')) {
+    errors.push("SupportIssues.jsx is missing the internal 'Log a Ticket' secondary action");
+  }
+  if (/>\s*New Support Issue\s*</.test(supportV16)) {
+    errors.push("SupportIssues.jsx still exposes the retired 'New Support Issue' primary action");
+  }
+
+  // 25e. Comment honesty: thread errors live beside the composer; the
+  // internal no-editor state is explicit, never a fake 'No comments yet'.
+  if (!supportV16.includes('commentError') || !supportV16.includes('commentsUnavailable')) {
+    errors.push("SupportIssues.jsx is missing the honest comment error/unavailable states");
+  }
+  const postCommentMatch = supportV16.match(/const handlePostComment = async[\s\S]*?\n  \};/);
+  if (!postCommentMatch || !postCommentMatch[0].includes('setCommentError') || !postCommentMatch[0].includes('await loadComments')) {
+    errors.push("handlePostComment does not surface errors beside the composer and canonically reload the thread");
+  }
+
+  // 25f. Client-first request language and post-create assignment.
+  ['When do you need this?', 'Requester', 'Recorded by', 'Brief / Context of Request'].forEach(s => {
+    if (!civ16.includes(s)) {
+      errors.push(`ClientInputRequirements.jsx is missing the client-facing language: ${s}`);
+    }
+  });
+  if (civ16.includes('Primary Approver')) {
+    errors.push("ClientInputRequirements.jsx still exposes Primary Approver on the request intake");
+  }
+  if (civ16.includes('value={newRequestForm.contributorUserId}')) {
+    errors.push("ClientInputRequirements.jsx still exposes Assigned Contributor on the primary create form — assignment is post-create triage");
+  }
+  if (!/Assign Contributor|Change Contributor/.test(civ16)) {
+    errors.push("ClientInputRequirements.jsx lost the post-create Assign Contributor triage action");
+  }
+
+  // 25g. Task status system: one complete central map + visible legend,
+  // colour never without text.
+  const CANONICAL_TASK_STATUSES = ['Not Started', 'In Progress', 'Waiting on Client', 'Blocked', 'Done', 'Recurring — Active', 'Deferred', 'Moved to Retainer', 'Moved to Phase 2', 'Moved to Phase 3', 'Out of Scope', 'Separate Scope'];
+  CANONICAL_TASK_STATUSES.forEach(s => {
+    if (!badgeV16.includes(`"${s}"`) && !badgeV16.includes(`${s.split(' ')[0]}:`)) {
+      errors.push(`Badge.jsx statusStyles/TASK_STATUS_LEGEND is missing canonical task status: ${s}`);
+    }
+  });
+  if (!badgeV16.includes('TASK_STATUS_LEGEND') || !badgeV16.includes('function StatusLegend')) {
+    errors.push("Badge.jsx is missing the TASK_STATUS_LEGEND map or the StatusLegend component");
+  }
+  ['TaskCommandCenter.jsx', 'DeliveryBoard.jsx'].forEach(v => {
+    const src = fs.readFileSync(path.join(__dirname, `../src/views/${v}`), 'utf8');
+    if (!src.includes('<StatusLegend')) {
+      errors.push(`${v} does not render the shared StatusLegend`);
+    }
+  });
+
+  // 25h. Guided review data-loss guards + persistence honesty (V4A.16):
+  // navigation must never silently discard the current item's typed
+  // feedback, tab close warns while typing is unsaved, and both save and
+  // submit outcomes are stated out loud.
+  const guidedFormV16 = fs.readFileSync(path.join(__dirname, '../src/components/GuidedReviewForm.jsx'), 'utf8');
+  if (!guidedFormV16.includes('saveIfDirty') || !guidedFormV16.includes('navigateTo')) {
+    errors.push("GuidedReviewForm.jsx is missing the dirty-navigation auto-save guard (saveIfDirty/navigateTo)");
+  }
+  if (!guidedFormV16.includes('beforeunload')) {
+    errors.push("GuidedReviewForm.jsx is missing the beforeunload unsaved-typing guard");
+  }
+  if (/onClick=\{\(\) => \{ setShowSummary\(false\); setIndex\(i\); \}\}/.test(guidedFormV16)) {
+    errors.push("GuidedReviewForm.jsx navigator still bypasses the dirty-save guard");
+  }
+  if (!guidedFormV16.includes('saved successfully') || !guidedFormV16.includes('Submitted to Embark successfully')) {
+    errors.push("GuidedReviewForm.jsx is missing the explicit save/submit success indicators");
+  }
+  if (!civ16.includes('responseSaved') && !fs.readFileSync(clientInputJsxPath, 'utf8').includes('responseSaved')) {
+    errors.push("ClientInputRequirements.jsx Save Draft gives no visible success confirmation (responseSaved)");
+  }
+
+  // 26. V4A.17 — mark-resolved trigger conflict fix, weekly review
+  // retention, and honest pending-migration error language.
+  // 26a. The corrected resolve pair in the (still pending) ticket retention
+  // migration: protect_support_columns honours the narrow lifecycle bridge,
+  // and mark_internal_support_ticket_resolved is its EXACTLY-ONE setter.
+  if (fs.existsSync(ticketRetMigrationPath)) {
+    const trSqlV17 = fs.readFileSync(ticketRetMigrationPath, 'utf8');
+    const trCodeV17 = trSqlV17.split('\n').filter(line => !line.trim().startsWith('--')).join('\n');
+    const bridgeSetters = (trCodeV17.match(/set_config\('app\.support_lifecycle_bridge', 'true', true\)/g) || []).length;
+    if (bridgeSetters !== 1) {
+      errors.push(`support_ticket_retention.sql defines ${bridgeSetters} support_lifecycle_bridge setters, expected exactly 1 (mark_internal_support_ticket_resolved)`);
+    }
+    if (!/current_setting\('app\.support_lifecycle_bridge', true\) = 'true'/.test(trCodeV17)) {
+      errors.push("support_ticket_retention.sql protect_support_columns does not honour the lifecycle bridge — Mark Resolved stays broken");
+    }
+    if (!/CREATE OR REPLACE FUNCTION mark_internal_support_ticket_resolved/.test(trSqlV17)) {
+      errors.push("support_ticket_retention.sql does not ship the corrected mark_internal_support_ticket_resolved");
+    }
+    // The original internal_operator bridge key must not gain a second setter here.
+    if (/set_config\('app\.internal_operator_bridge'/.test(trCodeV17)) {
+      errors.push("support_ticket_retention.sql must not set app.internal_operator_bridge — its single setter contract is locked");
+    }
+  }
+
+  // 26b. Weekly review retention migration: Embark-only, guarded delete,
+  // additive archive, recreated register read.
+  const weeklyRetMigrationPath = path.join(__dirname, '../supabase/weekly_review_retention.sql');
+  if (!fs.existsSync(weeklyRetMigrationPath)) {
+    errors.push("Missing supabase/weekly_review_retention.sql");
+  } else {
+    const wrSql = fs.readFileSync(weeklyRetMigrationPath, 'utf8');
+    const wrCode = wrSql.split('\n').filter(line => !line.trim().startsWith('--')).join('\n');
+    const wrEmbarkChecks = (wrCode.match(/organisation_label = 'Embark Digitals'/g) || []).length;
+    if (wrEmbarkChecks !== 3) {
+      errors.push(`weekly_review_retention.sql enforces Embark-only authority ${wrEmbarkChecks} times, expected 3`);
+    }
+    if (!/ADD COLUMN IF NOT EXISTS archived_at timestamptz/.test(wrCode)) {
+      errors.push("weekly_review_retention.sql does not additively add weekly_delivery_reviews.archived_at");
+    }
+    if (!/v_status <> 'Awaiting Client Review'/.test(wrCode) || !/v_feedback_count > 0/.test(wrCode)) {
+      errors.push("delete_internal_empty_weekly_review is missing the never-submitted / zero-feedback guards");
+    }
+    const wrDeletes = (wrCode.match(/DELETE FROM/g) || []).length;
+    if (wrDeletes !== 1 || !/DELETE FROM weekly_delivery_reviews WHERE id = p_review_id/.test(wrCode)) {
+      errors.push("weekly_review_retention.sql must contain exactly one narrowly-scoped review DELETE");
+    }
+    if (/DROP TABLE|TRUNCATE/i.test(wrCode)) {
+      errors.push("weekly_review_retention.sql contains a destructive table operation");
+    }
+    if (!/archived_at timestamptz\s*\)/.test(wrSql)) {
+      errors.push("Recreated get_internal_weekly_reviews does not return archived_at");
+    }
+  }
+  const serviceJsV17 = fs.readFileSync(path.join(__dirname, '../src/services/collaborationService.js'), 'utf8');
+  ['archiveInternalWeeklyReview', 'deleteInternalEmptyWeeklyReview'].forEach(fn => {
+    if (!serviceJsV17.includes(fn)) errors.push(`collaborationService.js is missing ${fn}`);
+  });
+  const weeklyV17 = fs.readFileSync(path.join(__dirname, '../src/views/WeeklyDeliveryReview.jsx'), 'utf8');
+  if (!/isInternalOperator && !isClient && isEmbarkEditor/.test(weeklyV17)) {
+    errors.push("WeeklyDeliveryReview.jsx retention actions are not gated to Embark-only internal personas");
+  }
+
+  // 26c. Pending-migration errors speak product language, never
+  // "schema cache": the shared mapper exists and every retention surface
+  // uses it.
+  if (!fs.existsSync(path.join(__dirname, '../src/utils/dbErrors.js'))) {
+    errors.push("Missing src/utils/dbErrors.js pending-migration error mapper");
+  }
+  ['SupportIssues.jsx', 'ClientInputRequirements.jsx', 'WeeklyDeliveryReview.jsx'].forEach(v => {
+    const src = fs.readFileSync(path.join(__dirname, `../src/views/${v}`), 'utf8');
+    if (!src.includes('explainDbError')) {
+      errors.push(`${v} retention actions do not translate pending-migration errors (explainDbError)`);
+    }
+  });
+
+  // 26d. In-form team-member attribution (V4A.17): the request forms carry
+  // their own "Recorded by / Created by" picker wired to the SAME global
+  // Active Editor (onSelectAuthor) — one identity truth, no sidebar detour.
+  const civ17 = fs.readFileSync(clientInputJsxPath, 'utf8');
+  if (!civ17.includes('Recorded by (team member)') || !civ17.includes('onSelectAuthor')) {
+    errors.push("ClientInputRequirements.jsx is missing the in-form Recorded by team-member picker wired to onSelectAuthor");
+  }
+  if (!/Requester[\s\S]{0,800}author:/.test(civ17) || !/contrib:/.test(civ17)) {
+    errors.push("ClientInputRequirements.jsx Requester dropdown does not offer team/client people alongside client sign-ins");
+  }
+
+  // 26e. Request edit (V4A.18): the narrow internal edit RPC matching the
+  // ticket edit contract — title/entity/urgency/source only, lifecycle
+  // guarded, provenance-commented, never touching protected columns.
+  const requestEditMigrationPath = path.join(__dirname, '../supabase/client_input_request_edit.sql');
+  if (!fs.existsSync(requestEditMigrationPath)) {
+    errors.push("Missing supabase/client_input_request_edit.sql");
+  } else {
+    const reSql = fs.readFileSync(requestEditMigrationPath, 'utf8');
+    const reCode = reSql.split('\n').filter(line => !line.trim().startsWith('--')).join('\n');
+    if (!/FROM update_authors ua\s+WHERE ua\.id = p_author_id AND ua\.is_active = true/.test(reCode)) {
+      errors.push("update_internal_client_input_request does not validate the Active Editor");
+    }
+    if (!/IN \('Approved', 'Delivered'\)/.test(reCode)) {
+      errors.push("update_internal_client_input_request is missing the Approved/Delivered lifecycle lock");
+    }
+    if (/\bstatus\s*=|\bassigned_contributor_user_id\s*=|\bprimary_approver_author_id\s*=|\blinked_tracker_item_id\s*=/.test(reCode.match(/UPDATE client_input_requests[\s\S]*?WHERE id = p_request_id/)?.[0] || '')) {
+      errors.push("update_internal_client_input_request touches protected/assignment columns — it must edit title/entity/urgency/source only");
+    }
+    if (!/INSERT INTO client_input_comments/.test(reCode)) {
+      errors.push("update_internal_client_input_request does not record edit provenance");
+    }
+    if (/DELETE FROM|DROP TABLE|TRUNCATE/i.test(reCode)) {
+      errors.push("client_input_request_edit.sql contains a destructive operation");
+    }
+  }
+  const serviceJsV18 = fs.readFileSync(path.join(__dirname, '../src/services/collaborationService.js'), 'utf8');
+  if (!serviceJsV18.includes('updateInternalClientInputRequest')) {
+    errors.push("collaborationService.js is missing updateInternalClientInputRequest");
+  }
+  if (!civ17.includes('Edit Request') || !civ17.includes('handleSaveRequestEdit')) {
+    errors.push("ClientInputRequirements.jsx is missing the internal Edit Request action");
   }
 
   if (errors.length > 0) {

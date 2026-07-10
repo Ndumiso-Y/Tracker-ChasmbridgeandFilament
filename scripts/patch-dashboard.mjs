@@ -1,4 +1,9 @@
-import {
+import fs from 'fs';
+import path from 'path';
+
+const dashboardPath = path.resolve('./src/views/Dashboard.jsx');
+
+const newDashboardContent = `import {
   AlertTriangle,
   BarChart3,
   CalendarClock,
@@ -15,8 +20,6 @@ import { Badge, StatusBadge, priorityStyles, statusStyles } from "../components/
 import { ProgressBar } from "../components/ProgressBar";
 import { EmptyState } from "../components/EmptyState";
 import { TaskList } from "../components/TaskList";
-import { AssurancePanel } from "../components/AssurancePanel";
-import { NeedsAttention } from "../components/NeedsAttention";
 import { cx } from "../utils/cx";
 
 export function Dashboard({
@@ -24,31 +27,19 @@ export function Dashboard({
   tasks = staticTasks,
   launchChecklist = staticLaunchChecklist,
   userRole = null,
-  onUpdateLaunchItem = null,
-  hasProfile = false,
-  selectedAuthorId = "",
-  onNavigate = null,
-  onOpenRecord = null
+  onUpdateLaunchItem = null
 }) {
   const deliveryWindowTasks = tasks.filter((t) => t.phase === "Phase 2" || t.phase === "Phase 3");
   const currentFocus = deliveryWindowTasks.filter((task) => ["In Progress", "Blocked"].includes(task.status) || task.deliveryLane === "This Week").slice(0, 5);
   const blockers = deliveryWindowTasks.filter((task) => task.deliveryLane === "Blocked" || task.status === "Blocked");
   const awaitingApprovals = deliveryWindowTasks.filter((task) => task.approvalStatus === "Awaiting Approval" || task.deliveryLane === "Awaiting Approval").slice(0, 5);
-  // Overdue was previously only a count — the operator could see THAT work
-  // was late but not WHICH work. Surface the actual items, most attention-
-  // worthy signal first in the right column.
-  const today = new Date();
-  const overdueTasks = deliveryWindowTasks
-    .filter((task) => task.dueDate && new Date(task.dueDate) < today && task.status !== "Done")
-    .sort((a, b) => (a.dueDate < b.dueDate ? -1 : 1))
-    .slice(0, 5);
   
   const phaseOneActive = tasks.filter((task) => task.phase === "Phase 1" && task.status !== "Done").length;
   const launchReady = launchChecklist.filter((item) => item.status === "Done").length;
   const launchPercent = launchChecklist.length ? Math.round((launchReady / launchChecklist.length) * 100) : 0;
 
   const statCards = [
-    ["Phase 2 Progress", `${metrics.p2Progress}%`, BarChart3],
+    ["Phase 2 Progress", \`\${metrics.p2Progress}%\`, BarChart3],
     ["Phase 3 Health", metrics.p3Health, Activity],
     ["Awaiting Approval", metrics.awaitingApproval, CheckCircle2],
     ["Blocked", metrics.deliveryBlocked, AlertTriangle],
@@ -71,14 +62,6 @@ export function Dashboard({
         <Info size={16} />
         <span><strong>Package 3 Review Context:</strong> The programme is currently undergoing a one-month review and support period to establish active operational cadence.</span>
       </div>
-
-      <NeedsAttention
-        tasks={tasks}
-        hasProfile={hasProfile}
-        selectedAuthorId={selectedAuthorId}
-        onNavigate={onNavigate}
-        onOpenRecord={onOpenRecord}
-      />
 
       <div className="mb-6 overflow-hidden rounded-lg border border-navy/10 bg-navy shadow-premium">
         <div className="grid gap-0 xl:grid-cols-[1.45fr_0.9fr]">
@@ -111,8 +94,6 @@ export function Dashboard({
         </div>
       </div>
 
-      <AssurancePanel />
-
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-6">
         {statCards.map(([label, value, Icon]) => (
           <div key={label} className="panel group p-5 transition hover:-translate-y-0.5 hover:border-gold/50 hover:shadow-premium">
@@ -140,9 +121,8 @@ export function Dashboard({
         </div>
 
         <div className="space-y-5">
-          <Snapshot title="Overdue" icon={CalendarClock} items={overdueTasks} empty="Nothing is past its due date." />
-          <Snapshot title="Blockers" icon={AlertTriangle} items={blockers} empty="No delivery blockers recorded." />
           <Snapshot title="Awaiting Approval" icon={CheckCircle2} items={awaitingApprovals} empty="No items waiting for approval." />
+          <Snapshot title="Blockers" icon={AlertTriangle} items={blockers} empty="No delivery blockers recorded." />
         </div>
       </div>
 
@@ -202,3 +182,7 @@ function Snapshot({ title, icon: Icon, items, empty }) {
 }
 
 export default Dashboard;
+`;
+
+fs.writeFileSync(dashboardPath, newDashboardContent, 'utf8');
+console.log('Dashboard.jsx updated successfully.');

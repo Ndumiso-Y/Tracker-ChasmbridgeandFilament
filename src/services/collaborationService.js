@@ -41,6 +41,42 @@ export const collaborationService = {
     return Array.isArray(data) ? data[0] : data;
   },
 
+  async updateInternalSupportTicket(payload) {
+    const { data, error } = await supabase
+      .rpc('update_internal_support_ticket', {
+        p_author_id: payload.authorId,
+        p_ticket_id: payload.ticketId,
+        p_linked_tracker_item_id: payload.linkedTrackerItemId || null,
+        p_title: payload.title,
+        p_description: payload.description,
+        p_client_reported_urgency: payload.clientReportedUrgency,
+      });
+    if (error) throw error;
+    return Array.isArray(data) ? data[0] : data;
+  },
+
+  async markInternalSupportTicketResolved(payload) {
+    const { data, error } = await supabase
+      .rpc('mark_internal_support_ticket_resolved', {
+        p_author_id: payload.authorId,
+        p_ticket_id: payload.ticketId,
+        p_resolution_note: payload.resolutionNote || null,
+      });
+    if (error) throw error;
+    return Array.isArray(data) ? data[0] : data;
+  },
+
+  async createInternalSupportTicketComment(payload) {
+    const { data, error } = await supabase
+      .rpc('create_internal_support_ticket_comment', {
+        p_author_id: payload.authorId,
+        p_ticket_id: payload.ticketId,
+        p_body: payload.body,
+      });
+    if (error) throw error;
+    return Array.isArray(data) ? data[0] : data;
+  },
+
   async createInternalClientInputRequest(payload) {
     const { data, error } = await supabase
       .rpc('create_internal_client_input_request', {
@@ -76,6 +112,172 @@ export const collaborationService = {
   // get_internal_active_client_contributors() in
   // internal_operator_creation_workflow.sql for why this goes through a
   // narrow, Active-Editor-validated RPC rather than a direct table select.
+  // Internal Active Editor: link or clear a tracker item on a client input
+  // request. Uses the narrow link_internal_client_input_request_tracker_item
+  // SECURITY DEFINER RPC — never a generic request update path.
+  async linkInternalClientInputRequestTrackerItem(payload) {
+    const { data, error } = await supabase
+      .rpc('link_internal_client_input_request_tracker_item', {
+        p_author_id: payload.authorId,
+        p_request_id: payload.requestId,
+        p_tracker_item_id: payload.trackerItemId || null,
+      });
+    if (error) throw error;
+    return Array.isArray(data) ? data[0] : data;
+  },
+
+  // Client Access provisioning (V4A.15) — authenticated admin only. The RPC
+  // re-verifies is_admin() server-side, activates client_contributor access
+  // for an exact email that has already signed in via Magic Link, and can
+  // never create or modify an admin profile. Never granted to anon.
+  async provisionClientContributor(payload) {
+    const { data, error } = await supabase
+      .rpc('provision_client_contributor', {
+        p_email: payload.email,
+        p_display_name: payload.displayName,
+        p_entity_scope: payload.entityScope,
+      });
+    if (error) throw error;
+    return Array.isArray(data) ? data[0] : data;
+  },
+
+  // Admin-only reads/updates over user_access_profiles ride the existing
+  // "Admin full access" RLS policy directly — no new server surface.
+  async getClientAccessProfiles() {
+    const { data, error } = await supabase
+      .from('user_access_profiles')
+      .select('*')
+      .order('created_at', { ascending: true });
+    if (error) throw error;
+    return data || [];
+  },
+
+  async setClientAccessActive(userId, isActive) {
+    const { data, error } = await supabase
+      .from('user_access_profiles')
+      .update({ is_active: isActive, updated_at: new Date().toISOString() })
+      .eq('user_id', userId)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  },
+
+  // Request edit (V4A.18): the narrow internal edit matching the ticket
+  // edit contract — title/entity/urgency/source only, lifecycle-guarded,
+  // provenance-commented server-side.
+  async updateInternalClientInputRequest(payload) {
+    const { data, error } = await supabase
+      .rpc('update_internal_client_input_request', {
+        p_author_id: payload.authorId,
+        p_request_id: payload.requestId,
+        p_title: payload.title,
+        p_entity: payload.entity,
+        p_client_reported_urgency: payload.clientReportedUrgency,
+        p_requirement_source: payload.requirementSource || null,
+        p_additional_context: payload.additionalContext || null,
+      });
+    if (error) throw error;
+    return Array.isArray(data) ? data[0] : data;
+  },
+
+  // Request retention (V4A.15): archive is the removal model for real
+  // collaboration records (reversible, provenance-commented); permanent
+  // delete exists ONLY for never-assigned Drafts via a status-guarded RPC.
+  async archiveInternalClientInputRequest(payload) {
+    const { data, error } = await supabase
+      .rpc('archive_internal_client_input_request', {
+        p_author_id: payload.authorId,
+        p_request_id: payload.requestId,
+      });
+    if (error) throw error;
+    return Array.isArray(data) ? data[0] : data;
+  },
+
+  async unarchiveInternalClientInputRequest(payload) {
+    const { data, error } = await supabase
+      .rpc('unarchive_internal_client_input_request', {
+        p_author_id: payload.authorId,
+        p_request_id: payload.requestId,
+      });
+    if (error) throw error;
+    return Array.isArray(data) ? data[0] : data;
+  },
+
+  async deleteInternalDraftClientInputRequest(payload) {
+    const { error } = await supabase
+      .rpc('delete_internal_draft_client_input_request', {
+        p_author_id: payload.authorId,
+        p_request_id: payload.requestId,
+      });
+    if (error) throw error;
+  },
+
+  // Support ticket retention (V4A.16): removal authority is EMBARK ONLY —
+  // enforced server-side (active editor AND organisation_label = 'Embark
+  // Digitals'), never by UI hiding alone. Real tickets archive reversibly;
+  // permanent delete exists only for New/Open tickets with zero history.
+  async archiveInternalSupportTicket(payload) {
+    const { data, error } = await supabase
+      .rpc('archive_internal_support_ticket', {
+        p_author_id: payload.authorId,
+        p_ticket_id: payload.ticketId,
+      });
+    if (error) throw error;
+    return Array.isArray(data) ? data[0] : data;
+  },
+
+  async unarchiveInternalSupportTicket(payload) {
+    const { data, error } = await supabase
+      .rpc('unarchive_internal_support_ticket', {
+        p_author_id: payload.authorId,
+        p_ticket_id: payload.ticketId,
+      });
+    if (error) throw error;
+    return Array.isArray(data) ? data[0] : data;
+  },
+
+  async deleteInternalTestSupportTicket(payload) {
+    const { error } = await supabase
+      .rpc('delete_internal_test_support_ticket', {
+        p_author_id: payload.authorId,
+        p_ticket_id: payload.ticketId,
+      });
+    if (error) throw error;
+  },
+
+  // Weekly review retention (V4A.17) — same Embark-only server-enforced
+  // model as tickets: archive real reviews reversibly; permanent delete only
+  // for a never-submitted review with zero feedback.
+  async archiveInternalWeeklyReview(payload) {
+    const { data, error } = await supabase
+      .rpc('archive_internal_weekly_review', {
+        p_author_id: payload.authorId,
+        p_review_id: payload.reviewId,
+      });
+    if (error) throw error;
+    return Array.isArray(data) ? data[0] : data;
+  },
+
+  async unarchiveInternalWeeklyReview(payload) {
+    const { data, error } = await supabase
+      .rpc('unarchive_internal_weekly_review', {
+        p_author_id: payload.authorId,
+        p_review_id: payload.reviewId,
+      });
+    if (error) throw error;
+    return Array.isArray(data) ? data[0] : data;
+  },
+
+  async deleteInternalEmptyWeeklyReview(payload) {
+    const { error } = await supabase
+      .rpc('delete_internal_empty_weekly_review', {
+        p_author_id: payload.authorId,
+        p_review_id: payload.reviewId,
+      });
+    if (error) throw error;
+  },
+
   async getInternalActiveClientContributors(authorId) {
     const { data, error } = await supabase
       .rpc('get_internal_active_client_contributors', { p_author_id: authorId });
@@ -113,7 +315,17 @@ export const collaborationService = {
     const { data, error } = await supabase
       .rpc('get_internal_client_input_requests', { p_author_id: authorId });
     if (error) throw error;
-    return data || [];
+    // Reshape flat joined linked-item fields into nested tracker_items object
+    // matching the authenticated getRequests() shape for consistent rendering.
+    return (data || []).map(r => ({
+      ...r,
+      tracker_items: r.linked_tracker_item_id ? {
+        title: r.linked_tracker_item_title,
+        phase: r.linked_tracker_item_phase,
+        status: r.linked_tracker_item_status,
+        entity: r.linked_tracker_item_entity,
+      } : null,
+    }));
   },
 
   async getInternalClientInputResponses(authorId, requestId) {
@@ -197,7 +409,39 @@ export const collaborationService = {
         p_entity: payload.entity,
         p_review_period_start: payload.periodStart,
         p_review_period_end: payload.periodEnd,
-        p_assigned_contributor_user_id: payload.contributorUserId,
+        p_assigned_contributor_user_id: payload.contributorUserId || null,
+      });
+    if (error) throw error;
+    return Array.isArray(data) ? data[0] : data;
+  },
+
+  // Atomic internal open path: creates the review AND links tracker items in
+  // one SECURITY DEFINER function invocation, preventing partial linkage and
+  // providing a protected write path for the no-session Active Editor persona.
+  // Use this for the internal operator open flow. The plain openInternalWeeklyReview
+  // is retained for callers that do not supply work-preview items.
+  async openInternalWeeklyReviewWithItems(payload) {
+    const { data, error } = await supabase
+      .rpc('open_internal_weekly_review_with_items', {
+        p_author_id: payload.authorId,
+        p_entity: payload.entity,
+        p_review_period_start: payload.periodStart,
+        p_review_period_end: payload.periodEnd,
+        p_assigned_contributor_user_id: payload.contributorUserId || null,
+        p_tracker_item_ids: payload.trackerItemIds || null,
+      });
+    if (error) throw error;
+    return Array.isArray(data) ? data[0] : data;
+  },
+
+
+
+  async assignInternalWeeklyReviewContributor(payload) {
+    const { data, error } = await supabase
+      .rpc('assign_internal_weekly_review_contributor', {
+        p_author_id: payload.authorId,
+        p_review_id: payload.reviewId,
+        p_contributor_user_id: payload.contributorUserId || null,
       });
     if (error) throw error;
     return Array.isArray(data) ? data[0] : data;
@@ -307,7 +551,8 @@ export const collaborationService = {
         *,
         client_input_templates ( title ),
         client_input_responses ( * ),
-        client_input_comments ( * )
+        client_input_comments ( * ),
+        tracker_items ( title, phase, status, entity )
       `)
       .order('created_at', { ascending: false });
     if (error) throw error;
@@ -511,6 +756,49 @@ export const collaborationService = {
     if (error) throw error;
   },
 
+  // Internal operator collaboration reads (V4A.11): the same disappearing-
+  // record defect class fixed for Client Input in V4A.10 also applied to
+  // the Support and Weekly Review registers — direct anon SELECTs return
+  // zero rows for the no-session Active Editor, so created records vanished
+  // on navigation. These four narrow author-validated RPCs are the real
+  // read path for that persona; authenticated admin/client personas keep
+  // their existing RLS-owned direct reads below.
+  async getInternalSupportTickets(authorId) {
+    const { data, error } = await supabase
+      .rpc('get_internal_support_tickets', { p_author_id: authorId });
+    if (error) throw error;
+    // Reshape the flat joined title to the nested shape the register renders.
+    return (data || []).map(t => ({ ...t, tracker_items: t.linked_tracker_item_title ? { title: t.linked_tracker_item_title } : null }));
+  },
+
+  async getInternalWeeklyReviews(authorId) {
+    const { data, error } = await supabase
+      .rpc('get_internal_weekly_reviews', { p_author_id: authorId });
+    if (error) throw error;
+    return data || [];
+  },
+
+  async getInternalWeeklyReviewFeedback(authorId, reviewId) {
+    const { data, error } = await supabase
+      .rpc('get_internal_weekly_review_feedback', { p_author_id: authorId, p_review_id: reviewId });
+    if (error) throw error;
+    return data || [];
+  },
+
+  async getInternalWeeklyReviewTrackerItems(authorId, reviewId) {
+    const { data, error } = await supabase
+      .rpc('get_internal_weekly_review_tracker_items', { p_author_id: authorId, p_review_id: reviewId });
+    if (error) throw error;
+    return (data || []).map(li => ({ ...li, tracker_items: li.tracker_item_title ? { title: li.tracker_item_title } : null }));
+  },
+
+  async getInternalSupportTicketComments(authorId, ticketId) {
+    const { data, error } = await supabase
+      .rpc('get_internal_support_ticket_comments', { p_author_id: authorId, p_ticket_id: ticketId });
+    if (error) throw error;
+    return data || [];
+  },
+
   // Support Tickets
   async getTickets() {
     const { data, error } = await supabase
@@ -536,6 +824,30 @@ export const collaborationService = {
       .from('support_tickets')
       .update(updates)
       .eq('id', id)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  },
+
+  async getSupportTicketComments(ticketId) {
+    const { data, error } = await supabase
+      .from('support_ticket_comments')
+      .select('*, update_authors (display_name), user_access_profiles (display_name)')
+      .eq('ticket_id', ticketId)
+      .order('created_at', { ascending: true });
+    if (error) throw error;
+    return data.map(c => ({
+      ...c,
+      author_display_name: c.update_authors?.display_name,
+      user_display_name: c.user_access_profiles?.display_name,
+    }));
+  },
+
+  async addSupportTicketComment(payload) {
+    const { data, error } = await supabase
+      .from('support_ticket_comments')
+      .insert(payload)
       .select()
       .single();
     if (error) throw error;
