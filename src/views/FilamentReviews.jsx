@@ -51,10 +51,9 @@ export default function FilamentReviews({ selectedAuthorId = '', onOpenRecord = 
   const [requests, setRequests] = useState([]);
   const [entryCounts, setEntryCounts] = useState({}); // requestId -> reviewed count (authenticated persona)
   const [state, setState] = useState('loading'); // loading | ready | needs-editor | error
-  // Live template availability: the 61-slide v2 template ships in the
-  // pending filament_presentation_61_slide_review.sql migration — until it
-  // runs, starting a new presentation review is honestly impossible and the
-  // card says so instead of failing on a foreign key.
+  // Live template availability: the 61-slide v2 template is detected from the
+  // production contract so the start action only appears when the workspace is
+  // active.
   const [liveTemplateIds, setLiveTemplateIds] = useState(null); // null = unknown
   const [startBusy, setStartBusy] = useState(false);
   const [startError, setStartError] = useState(null);
@@ -244,11 +243,10 @@ export default function FilamentReviews({ selectedAuthorId = '', onOpenRecord = 
                         <p className="mb-2 rounded border border-red-200 bg-red-50 p-2 text-xs text-red-700">{startError}</p>
                       )}
                       {liveTemplateIds !== null && !liveTemplateIds.includes(prog.createTemplateId) ? (
-                        // Honest dependency state: the template ships in the
-                        // pending migration — nothing can start before it runs.
                         <p className="rounded border border-amber-200 bg-amber-50 p-2.5 text-xs text-amber-800">
-                          <span className="font-bold">Review template not installed yet.</span>{' '}
-                          Run the pending migration <span className="font-mono">filament_presentation_61_slide_review.sql</span> in Supabase, then start the {prog.unit === 'slides' ? '61-slide' : ''} review here.
+                          <span className="font-bold">Presentation Review Setup Pending</span>{' '}
+                          The 61-slide Presentation Review workspace has not been activated yet.
+                          Once activated, you can start and continue the review directly from here.
                         </p>
                       ) : !isClient ? (
                         <div>

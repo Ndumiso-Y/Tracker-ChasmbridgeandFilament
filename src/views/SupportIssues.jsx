@@ -141,7 +141,7 @@ export default function SupportIssues({ selectedAuthorId = "", authors = [], onS
       }
     } catch (err) {
       console.error('Failed to load comments', err);
-      setCommentError(explainDbError(err, 'supabase/fix_support_comment_read.sql'));
+      setCommentError(explainDbError(err, 'support comment read'));
     } finally {
       setLoadingComments(false);
     }
@@ -194,7 +194,7 @@ export default function SupportIssues({ selectedAuthorId = "", authors = [], onS
       const raw = err.message || 'Failed to mark resolved.';
       setActionError(
         /resolution_proposed_at directly|only transition a Resolved ticket/i.test(raw)
-          ? 'Marking resolved is blocked by a known database defect — run the pending migration supabase/support_ticket_retention.sql (it ships the corrected resolve function), then try again.'
+          ? 'Marking resolved is blocked by a live support ticket contract mismatch. Please ask Embark Digitals to verify the production setup, then try again.'
           : raw
       );
     } finally {
@@ -390,7 +390,7 @@ export default function SupportIssues({ selectedAuthorId = "", authors = [], onS
       await loadComments(selectedTicket.id);
     } catch (err) {
       console.error(err);
-      setCommentError(explainDbError(err, 'supabase/support_ticket_comment_moderation.sql'));
+      setCommentError(explainDbError(err, 'support comment moderation'));
     } finally {
       setCommentBusy(false);
     }
@@ -406,7 +406,7 @@ export default function SupportIssues({ selectedAuthorId = "", authors = [], onS
       await loadComments(selectedTicket.id);
     } catch (err) {
       console.error(err);
-      setCommentError(explainDbError(err, 'supabase/support_ticket_comment_moderation.sql'));
+      setCommentError(explainDbError(err, 'support comment moderation'));
     } finally {
       setCommentBusy(false);
     }
@@ -426,7 +426,7 @@ export default function SupportIssues({ selectedAuthorId = "", authors = [], onS
       await loadTickets();
     } catch (err) {
       console.error(err);
-      setActionError(explainDbError(err, 'supabase/support_ticket_retention.sql'));
+      setActionError(explainDbError(err, 'support ticket retention'));
     } finally {
       setRetentionBusy(false);
     }
@@ -442,7 +442,7 @@ export default function SupportIssues({ selectedAuthorId = "", authors = [], onS
       await loadTickets();
     } catch (err) {
       console.error(err);
-      setActionError(explainDbError(err, 'supabase/support_ticket_retention.sql'));
+      setActionError(explainDbError(err, 'support ticket retention'));
     } finally {
       setRetentionBusy(false);
     }
@@ -835,8 +835,7 @@ export default function SupportIssues({ selectedAuthorId = "", authors = [], onS
   }
 
   // Archived tickets leave the default register; internal users can reveal
-  // them. (archived_at ships in the pending support_ticket_retention.sql —
-  // until it runs, no row carries the field and nothing is filtered out.)
+  // them when the live support ticket contract returns archived_at.
   const archivedCount = tickets.filter(t => t.archived_at).length;
   const visibleTickets = tickets.filter(t => (showArchivedTickets ? true : !t.archived_at));
 

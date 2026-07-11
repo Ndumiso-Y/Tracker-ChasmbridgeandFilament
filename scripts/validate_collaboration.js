@@ -1675,10 +1675,10 @@ function validate() {
   }
 
   // 26. V4A.17 — mark-resolved trigger conflict fix, weekly review
-  // retention, and honest pending-migration error language.
-  // 26a. The corrected resolve pair in the (still pending) ticket retention
-  // migration: protect_support_columns honours the narrow lifecycle bridge,
-  // and mark_internal_support_ticket_resolved is its EXACTLY-ONE setter.
+  // retention, and product-safe contract-mismatch error language.
+  // 26a. The corrected resolve pair in the ticket retention source:
+  // protect_support_columns honours the narrow lifecycle bridge, and
+  // mark_internal_support_ticket_resolved is its EXACTLY-ONE setter.
   if (fs.existsSync(ticketRetMigrationPath)) {
     const trSqlV17 = fs.readFileSync(ticketRetMigrationPath, 'utf8');
     const trCodeV17 = trSqlV17.split('\n').filter(line => !line.trim().startsWith('--')).join('\n');
@@ -1736,16 +1736,20 @@ function validate() {
     errors.push("WeeklyDeliveryReview.jsx retention actions are not gated to Embark-only internal personas");
   }
 
-  // 26c. Pending-migration errors speak product language, never
-  // "schema cache": the shared mapper exists and every retention surface
-  // uses it.
+  // 26c. Contract-mismatch errors speak product language, never "schema
+  // cache" or SQL Editor instructions: the shared mapper exists and every
+  // retention surface uses it.
   if (!fs.existsSync(path.join(__dirname, '../src/utils/dbErrors.js'))) {
-    errors.push("Missing src/utils/dbErrors.js pending-migration error mapper");
+    errors.push("Missing src/utils/dbErrors.js contract-mismatch error mapper");
+  }
+  const dbErrorsJs = fs.readFileSync(path.join(__dirname, '../src/utils/dbErrors.js'), 'utf8');
+  if (/Supabase SQL Editor|pending database migration|pendingMigrationFile/.test(dbErrorsJs)) {
+    errors.push("dbErrors.js exposes pending-migration or SQL Editor instructions to product users");
   }
   ['SupportIssues.jsx', 'ClientInputRequirements.jsx', 'WeeklyDeliveryReview.jsx'].forEach(v => {
     const src = fs.readFileSync(path.join(__dirname, `../src/views/${v}`), 'utf8');
     if (!src.includes('explainDbError')) {
-      errors.push(`${v} retention actions do not translate pending-migration errors (explainDbError)`);
+      errors.push(`${v} retention actions do not translate contract-mismatch errors (explainDbError)`);
     }
   });
 
@@ -1849,15 +1853,15 @@ function validate() {
   }
 
   // 27c. Frontend wiring: service functions + inline moderation UI with
-  // honest pending-migration errors.
+  // product-safe contract-mismatch errors.
   if (!serviceV19.includes('updateInternalSupportTicketComment') || !serviceV19.includes('deleteInternalSupportTicketComment')) {
     errors.push("collaborationService.js is missing the comment moderation functions");
   }
   if (!supportV19.includes('handleSaveCommentEdit') || !supportV19.includes('handleDeleteComment')) {
     errors.push("SupportIssues.jsx is missing the comment edit/delete handlers");
   }
-  if (!/explainDbError\(err, 'supabase\/support_ticket_comment_moderation\.sql'\)/.test(supportV19)) {
-    errors.push("SupportIssues.jsx comment moderation errors do not name the pending migration");
+  if (!/explainDbError\(err, 'support comment moderation'\)/.test(supportV19)) {
+    errors.push("SupportIssues.jsx comment moderation errors do not use product-safe contract language");
   }
   if (!/canDeleteComment = isInternalOperator && isPlainComment && \(isOwnComment \|\| isEmbarkEditor\)/.test(supportV19)) {
     errors.push("SupportIssues.jsx comment delete visibility must be own-or-Embark on plain comments only");
@@ -1910,8 +1914,8 @@ function validate() {
   if (!/isMyPendingReview \|\| canInternalComplete/.test(weeklyV19)) {
     errors.push("WeeklyDeliveryReview.jsx does not render the scorecard form for the internal persona");
   }
-  if (!/explainDbError\(err, 'supabase\/internal_weekly_review_submission\.sql'\)/.test(weeklyV19)) {
-    errors.push("WeeklyDeliveryReview.jsx submit errors do not name the pending submission migration");
+  if (!/explainDbError\(err, 'weekly review submission'\)/.test(weeklyV19)) {
+    errors.push("WeeklyDeliveryReview.jsx submit errors do not use product-safe contract language");
   }
 
   if (errors.length > 0) {

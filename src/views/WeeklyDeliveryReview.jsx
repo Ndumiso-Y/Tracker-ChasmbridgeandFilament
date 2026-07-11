@@ -131,7 +131,7 @@ export default function WeeklyDeliveryReview({ selectedAuthorId = "", authors = 
       await loadReviews();
     } catch (err) {
       console.error(err);
-      setRetentionError(explainDbError(err, 'supabase/weekly_review_retention.sql'));
+      setRetentionError(explainDbError(err, 'weekly review retention'));
     } finally {
       setRetentionBusy(false);
     }
@@ -147,7 +147,7 @@ export default function WeeklyDeliveryReview({ selectedAuthorId = "", authors = 
       await loadReviews();
     } catch (err) {
       console.error(err);
-      setRetentionError(explainDbError(err, 'supabase/weekly_review_retention.sql'));
+      setRetentionError(explainDbError(err, 'weekly review retention'));
     } finally {
       setRetentionBusy(false);
     }
@@ -493,7 +493,7 @@ export default function WeeklyDeliveryReview({ selectedAuthorId = "", authors = 
       }
     } catch (err) {
       console.error(err);
-      setSubmitError(explainDbError(err, 'supabase/internal_weekly_review_submission.sql'));
+      setSubmitError(explainDbError(err, 'weekly review submission'));
     } finally {
       setActionLoading(false);
     }

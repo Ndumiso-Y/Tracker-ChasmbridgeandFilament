@@ -182,7 +182,7 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
       await loadRequests();
     } catch (err) {
       console.error(err);
-      setEditError(explainDbError(err, 'supabase/client_input_request_edit.sql'));
+      setEditError(explainDbError(err, 'client request editing'));
     } finally {
       setEditSaving(false);
     }
@@ -404,7 +404,7 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
       await loadRequests();
     } catch (err) {
       console.error(err);
-      showNotice('warning', explainDbError(err, 'supabase/client_access_and_request_retention.sql'));
+      showNotice('warning', explainDbError(err, 'client request retention'));
     } finally {
       setRetentionBusy(false);
     }
@@ -424,7 +424,7 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
       await loadRequests();
     } catch (err) {
       console.error(err);
-      showNotice('warning', explainDbError(err, 'supabase/client_access_and_request_retention.sql'));
+      showNotice('warning', explainDbError(err, 'client request retention'));
     } finally {
       setRetentionBusy(false);
     }
