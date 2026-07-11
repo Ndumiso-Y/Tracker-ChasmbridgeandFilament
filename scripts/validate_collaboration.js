@@ -1863,6 +1863,57 @@ function validate() {
     errors.push("SupportIssues.jsx comment delete visibility must be own-or-Embark on plain comments only");
   }
 
+  // ==========================================================================
+  // 28. V4A.19b — internal weekly review submission: with sign-ins parked the
+  //     Active Editor records the client's scorecard via an author-validated
+  //     RPC; the scorecard form must actually open for the internal persona.
+  // ==========================================================================
+  const subPath = path.join(__dirname, '../supabase/internal_weekly_review_submission.sql');
+  if (!fs.existsSync(subPath)) {
+    errors.push("Missing supabase/internal_weekly_review_submission.sql");
+  } else {
+    const subSql = fs.readFileSync(subPath, 'utf8');
+    if (!subSql.includes('submit_internal_weekly_review')) {
+      errors.push("Submission migration is missing submit_internal_weekly_review");
+    }
+    if (!/IS DISTINCT FROM 'Awaiting Client Review'/.test(subSql)) {
+      errors.push("submit_internal_weekly_review does not lock submission to Awaiting Client Review");
+    }
+    if (!/archived_at IS NOT NULL/.test(subSql)) {
+      errors.push("submit_internal_weekly_review does not refuse archived reviews");
+    }
+    if (!/p_delivery_score IS NULL/.test(subSql)) {
+      errors.push("submit_internal_weekly_review does not require the delivery score");
+    }
+    if (!/submitted_by_author_id = p_author_id/.test(subSql)) {
+      errors.push("submit_internal_weekly_review does not stamp submitted_by_author_id provenance");
+    }
+    if (!/review_status = 'Submitted'/.test(subSql)) {
+      errors.push("submit_internal_weekly_review does not move the review to Submitted");
+    }
+    if (!/WHERE ua\.id = p_author_id/.test(subSql) || !/DROP FUNCTION IF EXISTS get_internal_weekly_reviews/.test(subSql)) {
+      errors.push("Submission migration must keep author lookups table-qualified and recreate the register read (submitted_by_label needs DROP)");
+    }
+    if (/USING \(true\)|service_role/.test(subSql)) {
+      errors.push("Submission migration adds a forbidden broad policy or service_role reference");
+    }
+    if (/assigned_contributor_user_id\s*=/.test(subSql.match(/UPDATE weekly_delivery_reviews[\s\S]*?RETURNING/)?.[0] || '')) {
+      errors.push("submit_internal_weekly_review must never touch assigned_contributor_user_id (fabricated auth identity)");
+    }
+  }
+  if (!serviceV19.includes('submitInternalWeeklyReview')) {
+    errors.push("collaborationService.js is missing submitInternalWeeklyReview");
+  }
+  if (!/canInternalComplete = !!selectedReview && isInternalOperator/.test(weeklyV19)) {
+    errors.push("WeeklyDeliveryReview.jsx is missing canInternalComplete — the internal persona cannot open the scorecard");
+  }
+  if (!/isMyPendingReview \|\| canInternalComplete/.test(weeklyV19)) {
+    errors.push("WeeklyDeliveryReview.jsx does not render the scorecard form for the internal persona");
+  }
+  if (!/explainDbError\(err, 'supabase\/internal_weekly_review_submission\.sql'\)/.test(weeklyV19)) {
+    errors.push("WeeklyDeliveryReview.jsx submit errors do not name the pending submission migration");
+  }
+
   if (errors.length > 0) {
     console.error("❌ Validation Failed. Errors:");
     errors.forEach(e => console.error(`  - ${e}`));

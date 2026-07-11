@@ -822,6 +822,32 @@ export const collaborationService = {
     if (error) throw error;
   },
 
+  // Internal weekly review submission (internal_weekly_review_submission.sql):
+  // the client's scores recorded by an Active Editor while sign-ins are
+  // parked. Server enforces Awaiting-Client-Review + not-archived + the
+  // required delivery score, and stamps submitted_by_author_id.
+  async submitInternalWeeklyReview(payload) {
+    const { data, error } = await supabase
+      .rpc('submit_internal_weekly_review', {
+        p_author_id: payload.authorId,
+        p_review_id: payload.reviewId,
+        p_delivery_score: payload.deliveryScore,
+        p_communication_score: payload.communicationScore ?? null,
+        p_timing_score: payload.timingScore ?? null,
+        p_requirement_understanding_score: payload.requirementUnderstandingScore ?? null,
+        p_issue_resolution_score: payload.issueResolutionScore ?? null,
+        p_approval_process_score: payload.approvalProcessScore ?? null,
+        p_worked_well: payload.workedWell ?? null,
+        p_could_improve: payload.couldImprove ?? null,
+        p_did_not_meet_expectations: payload.didNotMeetExpectations ?? null,
+        p_next_week_priority_1: payload.priority1 ?? null,
+        p_next_week_priority_2: payload.priority2 ?? null,
+        p_next_week_priority_3: payload.priority3 ?? null,
+      });
+    if (error) throw error;
+    return Array.isArray(data) ? data[0] : data;
+  },
+
   // Support Tickets
   async getTickets() {
     const { data, error } = await supabase

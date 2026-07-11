@@ -425,38 +425,75 @@ export default function WeeklyDeliveryReview({ selectedAuthorId = "", authors = 
       setSubmitError('Delivery score is required.');
       return;
     }
+    if (isInternalOperator && !selectedAuthorId) {
+      setSubmitError('Select an Active Editor (Recorded by) in the sidebar first.');
+      return;
+    }
     setActionLoading(true);
     setSubmitError(null);
     try {
-      for (const taskId of selectedTaskIds) {
-        // Link them if not already linked
-        if (!linkedTrackerItems.some(li => li.tracker_item_id === taskId)) {
-          await collaborationService.linkReviewTrackerItem(selectedReview.id, taskId).catch(console.warn);
+      let updated;
+      if (isInternalOperator) {
+        // Sign-ins are parked: the client's scores are recorded by the
+        // Active Editor via an author-validated RPC. Work items were already
+        // auto-linked when the review was opened, so no link loop here.
+        updated = await collaborationService.submitInternalWeeklyReview({
+          authorId: selectedAuthorId,
+          reviewId: selectedReview.id,
+          deliveryScore: submitForm.deliveryScore,
+          communicationScore: submitForm.communicationScore || null,
+          timingScore: submitForm.timingScore || null,
+          requirementUnderstandingScore: submitForm.requirementUnderstandingScore || null,
+          issueResolutionScore: submitForm.issueResolutionScore || null,
+          approvalProcessScore: submitForm.approvalProcessScore || null,
+          workedWell: submitForm.workedWell || null,
+          couldImprove: submitForm.couldImprove || null,
+          didNotMeetExpectations: submitForm.didNotMeetExpectations || null,
+          priority1: submitForm.priority1 || null,
+          priority2: submitForm.priority2 || null,
+          priority3: submitForm.priority3 || null,
+        });
+      } else {
+        for (const taskId of selectedTaskIds) {
+          // Link them if not already linked
+          if (!linkedTrackerItems.some(li => li.tracker_item_id === taskId)) {
+            await collaborationService.linkReviewTrackerItem(selectedReview.id, taskId).catch(console.warn);
+          }
         }
+        updated = await collaborationService.updateReview(selectedReview.id, {
+          delivery_score: submitForm.deliveryScore || null,
+          communication_score: submitForm.communicationScore || null,
+          timing_score: submitForm.timingScore || null,
+          requirement_understanding_score: submitForm.requirementUnderstandingScore || null,
+          issue_resolution_score: submitForm.issueResolutionScore || null,
+          approval_process_score: submitForm.approvalProcessScore || null,
+          worked_well: submitForm.workedWell || null,
+          could_improve: submitForm.couldImprove || null,
+          did_not_meet_expectations: submitForm.didNotMeetExpectations || null,
+          next_week_priority_1: submitForm.priority1 || null,
+          next_week_priority_2: submitForm.priority2 || null,
+          next_week_priority_3: submitForm.priority3 || null,
+          reviewer_user_id: profile?.user_id || null,
+          assigned_contributor_user_id: profile?.user_id || null, // V4A.12 Self-claim
+          submitted_at: new Date().toISOString(),
+          review_status: 'Submitted',
+        });
       }
-      const updated = await collaborationService.updateReview(selectedReview.id, {
-        delivery_score: submitForm.deliveryScore || null,
-        communication_score: submitForm.communicationScore || null,
-        timing_score: submitForm.timingScore || null,
-        requirement_understanding_score: submitForm.requirementUnderstandingScore || null,
-        issue_resolution_score: submitForm.issueResolutionScore || null,
-        approval_process_score: submitForm.approvalProcessScore || null,
-        worked_well: submitForm.workedWell || null,
-        could_improve: submitForm.couldImprove || null,
-        did_not_meet_expectations: submitForm.didNotMeetExpectations || null,
-        next_week_priority_1: submitForm.priority1 || null,
-        next_week_priority_2: submitForm.priority2 || null,
-        next_week_priority_3: submitForm.priority3 || null,
-        reviewer_user_id: profile?.user_id || null,
-        assigned_contributor_user_id: profile?.user_id || null, // V4A.12 Self-claim
-        submitted_at: new Date().toISOString(),
-        review_status: 'Submitted',
-      });
       setSelectedReview(updated);
-      await loadReviews();
+      // Re-sync from the register read so joined labels (Recorded by,
+      // assignee name) appear immediately, not only after reopening.
+      try {
+        const rows = await fetchRegister();
+        setReviews(rows || []);
+        const fresh = (rows || []).find(r => r.id === updated.id);
+        if (fresh) setSelectedReview(fresh);
+      } catch (reloadErr) {
+        console.error(reloadErr);
+        await loadReviews();
+      }
     } catch (err) {
       console.error(err);
-      setSubmitError(err.message || 'Failed to submit review.');
+      setSubmitError(explainDbError(err, 'supabase/internal_weekly_review_submission.sql'));
     } finally {
       setActionLoading(false);
     }
@@ -468,18 +505,34 @@ export default function WeeklyDeliveryReview({ selectedAuthorId = "", authors = 
 
   const handleCreateIssueFromReview = async () => {
     if (!submitForm.didNotMeetExpectations.trim()) return;
+    if (isInternalOperator && !selectedAuthorId) return;
     setCreatingIssueFromReview(true);
     try {
-      await collaborationService.createTicket({
-        id: `ticket-${Date.now()}`,
-        title: `Unresolved issue from weekly review — ${selectedReview.entity}`,
-        entity: selectedReview.entity,
-        category: 'Other',
-        issue_type: 'Standalone Issue',
-        description: submitForm.didNotMeetExpectations.trim(),
-        reported_by_user_id: profile?.user_id || null,
-        status: 'New',
-      });
+      if (isInternalOperator) {
+        await collaborationService.createInternalSupportIssue({
+          authorId: selectedAuthorId,
+          title: `Unresolved issue from weekly review — ${selectedReview.entity}`,
+          entity: selectedReview.entity,
+          category: 'Other',
+          issueType: 'Standalone Issue',
+          linkedTrackerItemId: null,
+          description: submitForm.didNotMeetExpectations.trim(),
+          expectedOutcome: null,
+          clientReportedUrgency: 'Normal',
+          evidenceUrl: null,
+        });
+      } else {
+        await collaborationService.createTicket({
+          id: `ticket-${Date.now()}`,
+          title: `Unresolved issue from weekly review — ${selectedReview.entity}`,
+          entity: selectedReview.entity,
+          category: 'Other',
+          issue_type: 'Standalone Issue',
+          description: submitForm.didNotMeetExpectations.trim(),
+          reported_by_user_id: profile?.user_id || null,
+          status: 'New',
+        });
+      }
       setIssueFromReviewCreated(true);
     } catch (err) {
       console.error(err);
@@ -496,10 +549,17 @@ export default function WeeklyDeliveryReview({ selectedAuthorId = "", authors = 
     && (selectedReview.assigned_contributor_user_id === profile?.user_id || !selectedReview.assigned_contributor_user_id)
     && selectedReview.review_status === 'Awaiting Client Review';
 
-  const isAwaitingOthers = !!selectedReview && selectedReview.review_status === 'Awaiting Client Review' && !isMyPendingReview;
+  // While sign-ins are parked there is no client session to complete the
+  // scorecard, so the internal operator records the client's scores — the
+  // same "the client tells you, an editor records it" model as Log Request.
+  const canInternalComplete = !!selectedReview && isInternalOperator
+    && selectedReview.review_status === 'Awaiting Client Review'
+    && !selectedReview.archived_at;
+
+  const isAwaitingOthers = !!selectedReview && selectedReview.review_status === 'Awaiting Client Review' && !isMyPendingReview && !canInternalComplete;
 
   if (selectedReview) {
-    if (isMyPendingReview) {
+    if (isMyPendingReview || canInternalComplete) {
       return (
         <div className="flex-1 overflow-y-auto p-4 md:p-8 max-w-4xl mx-auto">
           <button
@@ -513,7 +573,11 @@ export default function WeeklyDeliveryReview({ selectedAuthorId = "", authors = 
             <div className="p-6 border-b border-slate-200 bg-amber-50/60">
               <span className="text-[10px] font-black uppercase tracking-[0.16em] text-amber-700">Action Required</span>
               <h2 className="text-2xl font-bold text-navy mt-0.5 mb-2">Weekly Delivery Review</h2>
-              <p className="text-sm text-slate-600 mb-2">Please review Embark Digitals based on the work completed and managed during this period.</p>
+              <p className="text-sm text-slate-600 mb-2">
+                {canInternalComplete
+                  ? 'Score Embark Digitals on this period’s delivery. Capture the client’s own ratings and words — the submission is recorded under the selected Active Editor.'
+                  : 'Please review Embark Digitals based on the work completed and managed during this period.'}
+              </p>
               <div className="flex flex-wrap items-center gap-3 text-sm text-slate-500">
                 <span className="bg-slate-100 px-2.5 py-1 rounded-full text-slate-600 font-medium">{selectedReview.entity}</span>
                 <span>•</span>
@@ -538,7 +602,9 @@ export default function WeeklyDeliveryReview({ selectedAuthorId = "", authors = 
                 </div>
               </div>
 
-              {deliveryItems.length > 0 && (
+              {/* Internal submissions skip this picker — work items were
+                  auto-linked when the review was opened. */}
+              {!canInternalComplete && deliveryItems.length > 0 && (
                 <div>
                   <label className="block text-sm font-bold text-navy mb-1.5">Tasks / Deliverables for This Week <span className="font-normal text-slate-400">(optional)</span></label>
                   <div className="max-h-40 overflow-y-auto border border-slate-200 rounded-lg p-2 space-y-1">
@@ -644,6 +710,11 @@ export default function WeeklyDeliveryReview({ selectedAuthorId = "", authors = 
                 <>
                   <span>•</span>
                   <span>Assigned: {selectedReview.assigned_contributor_name || contributorMap[selectedReview.assigned_contributor_user_id] || 'Contributor'}</span>
+                </>
+              ) : selectedReview.submitted_by_label ? (
+                <>
+                  <span>•</span>
+                  <span>Recorded by {selectedReview.submitted_by_label}</span>
                 </>
               ) : (
                 <>
