@@ -5,7 +5,7 @@ import { FileStack, Clock, CheckCircle, ChevronRight, Save, Send, Plus, X } from
 import { cx } from '../utils/cx';
 import { GUIDED_REVIEW_CONFIGS } from '../data/guidedReviewConfigs';
 import GuidedReviewForm from '../components/GuidedReviewForm';
-import { PROGRAMME_ENTITIES, INPUT_URGENCY, GUIDED_REVIEW_ACTION_LABELS, RETIRED_TEMPLATE_IDS } from '../data/programmeContext';
+import { PROGRAMME_ENTITIES, INPUT_URGENCY, GUIDED_REVIEW_ACTION_LABELS, RETIRED_TEMPLATE_IDS, SECURE_SIGN_IN_ENABLED } from '../data/programmeContext';
 import { requestResponsibility, RESPONSIBILITY } from '../utils/responsibility';
 import { ResponsibilityBadge } from '../components/Badge';
 import { displayRequestStatus, REQUEST_ORIGIN_SHORT } from '../utils/statusLanguage';
@@ -870,7 +870,9 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
             : 'Embark is reviewing and will act next.'
         }`
       : !profile
-        ? 'Responses are completed by the client from their secure sign-in. You are viewing this request as an internal editor.'
+        ? (SECURE_SIGN_IN_ENABLED
+            ? 'Responses are completed by the client from their secure sign-in. You are viewing this request as an internal editor.'
+            : 'Structured responses are view-only here for now — capture the client’s answers with Edit Request → additional context, and the full record stays on this request.')
         : null;
 
     // Created/Logged By provenance: prefer the honest created_by column
@@ -992,7 +994,9 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
                       Edit Request
                     </button>
                   )}
-                  {assignmentLifecycleLocked ? (
+                  {/* Contributor assignment routes work to client SIGN-IN
+                      accounts — parked with SECURE_SIGN_IN_ENABLED. */}
+                  {!SECURE_SIGN_IN_ENABLED ? null : assignmentLifecycleLocked ? (
                     <p className="text-xs text-slate-400 max-w-xs text-right">Contributor assignment is locked — this request has already been submitted.</p>
                   ) : (
                     <button
@@ -1626,9 +1630,11 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
                   existing Assign Contributor control on the request detail.
                   The backend fields (assigned_contributor_user_id,
                   primary_approver_author_id) are preserved unchanged. */}
-              <p className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-500">
-                You can choose who at the client answers this after creating it (Assign Contributor on the request).
-              </p>
+              {SECURE_SIGN_IN_ENABLED && (
+                <p className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-500">
+                  You can choose who at the client answers this after creating it (Assign Contributor on the request).
+                </p>
+              )}
 
               <div>
                 <label className="block text-sm font-bold text-navy mb-1.5">Related Delivery Item <span className="font-normal text-slate-400">(optional)</span></label>
@@ -2010,7 +2016,11 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
                           </optgroup>
                         )}
                       </select>
-                      <p className="text-xs text-slate-400 mt-1">A client sign-in account links the requester formally; a team/client name is recorded in the request context.</p>
+                      <p className="text-xs text-slate-400 mt-1">
+                        {SECURE_SIGN_IN_ENABLED
+                          ? 'A client sign-in account links the requester formally; a team/client name is recorded in the request context.'
+                          : 'The requester’s name is recorded in the request context.'}
+                      </p>
                     </div>
 
                     <div>

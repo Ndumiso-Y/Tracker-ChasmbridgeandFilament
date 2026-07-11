@@ -799,6 +799,29 @@ export const collaborationService = {
     return data || [];
   },
 
+  // Comment moderation (support_ticket_comment_moderation.sql):
+  // edit is author-only; delete is author-or-Embark. Both refuse system
+  // entries (resolution notes, provenance) server-side.
+  async updateInternalSupportTicketComment(authorId, commentId, body) {
+    const { data, error } = await supabase
+      .rpc('update_internal_support_ticket_comment', {
+        p_author_id: authorId,
+        p_comment_id: commentId,
+        p_body: body,
+      });
+    if (error) throw error;
+    return Array.isArray(data) ? data[0] : data;
+  },
+
+  async deleteInternalSupportTicketComment(authorId, commentId) {
+    const { error } = await supabase
+      .rpc('delete_internal_support_ticket_comment', {
+        p_author_id: authorId,
+        p_comment_id: commentId,
+      });
+    if (error) throw error;
+  },
+
   // Support Tickets
   async getTickets() {
     const { data, error } = await supabase

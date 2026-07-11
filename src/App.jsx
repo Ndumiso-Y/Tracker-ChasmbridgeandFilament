@@ -27,6 +27,7 @@ import {
 } from "./data/trackerData";
 import { validateWrite } from "./utils/validation";
 import { collaborationService } from "./services/collaborationService";
+import { SECURE_SIGN_IN_ENABLED } from "./data/programmeContext";
 
 // Import Views
 import Dashboard from "./views/Dashboard";
@@ -230,6 +231,10 @@ function App() {
   const filteredNavGroups = navGroups.map(group => ({
     ...group,
     items: group.items.filter(item => {
+      // Secure Sign In is parked (see SECURE_SIGN_IN_ENABLED): the Client
+      // Access provisioning surface leaves the sidebar until sign-ins are
+      // called back up. The view and its RPCs stay intact behind the flag.
+      if (item.id === 'client_access' && !SECURE_SIGN_IN_ENABLED) return false;
       if (item.adminOnly) {
         // Hide internal views from active client contributors.
         // Legacy viewers (!session) continue to see public Command Center.
@@ -952,7 +957,7 @@ if (isDeliverable && updatedFields.clientInput !== undefined) {
               <p className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-wider text-emerald-400">
                 <ShieldCheck size={12} /> Secure Admin Access Active
               </p>
-            ) : !session ? (
+            ) : !session && SECURE_SIGN_IN_ENABLED ? (
               <a
                 href="#/login"
                 className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-wider text-slate-400 hover:text-gold transition"

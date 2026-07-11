@@ -1793,6 +1793,76 @@ function validate() {
     errors.push("ClientInputRequirements.jsx is missing the internal Edit Request action");
   }
 
+  // ==========================================================================
+  // 27. V4A.19 — Secure Sign In parked behind a flag; ticket comment
+  //     edit/delete for the internal operator.
+  // ==========================================================================
+  const pcV19 = fs.readFileSync(path.join(__dirname, '../src/data/programmeContext.js'), 'utf8');
+  const appV19 = fs.readFileSync(path.join(__dirname, '../src/App.jsx'), 'utf8');
+  const supportV19 = fs.readFileSync(path.join(__dirname, '../src/views/SupportIssues.jsx'), 'utf8');
+  const weeklyV19 = fs.readFileSync(path.join(__dirname, '../src/views/WeeklyDeliveryReview.jsx'), 'utf8');
+  const serviceV19 = fs.readFileSync(path.join(__dirname, '../src/services/collaborationService.js'), 'utf8');
+
+  // 27a. The flag exists and gates the sign-in surfaces. The flag's VALUE is
+  // a product decision (off for now, may be flipped back on) — the validator
+  // only pins that the gates are wired, never the value.
+  if (!/export const SECURE_SIGN_IN_ENABLED\s*=/.test(pcV19)) {
+    errors.push("programmeContext.js is missing the SECURE_SIGN_IN_ENABLED flag");
+  }
+  if (!/item\.id === 'client_access' && !SECURE_SIGN_IN_ENABLED/.test(appV19)) {
+    errors.push("App.jsx does not gate the Client Access nav entry behind SECURE_SIGN_IN_ENABLED");
+  }
+  if (!/!session && SECURE_SIGN_IN_ENABLED \?/.test(appV19)) {
+    errors.push("App.jsx does not gate the sidebar Secure Sign In link behind SECURE_SIGN_IN_ENABLED");
+  }
+  if (!/SECURE_SIGN_IN_ENABLED && isInternalOperator && selectedReview\.review_status === 'Awaiting Client Review'/.test(weeklyV19)) {
+    errors.push("WeeklyDeliveryReview.jsx does not park the Assign Reviewer row behind SECURE_SIGN_IN_ENABLED");
+  }
+
+  // 27b. Comment moderation migration contracts.
+  const modPath = path.join(__dirname, '../supabase/support_ticket_comment_moderation.sql');
+  if (!fs.existsSync(modPath)) {
+    errors.push("Missing supabase/support_ticket_comment_moderation.sql");
+  } else {
+    const modSql = fs.readFileSync(modPath, 'utf8');
+    if (!modSql.includes('update_internal_support_ticket_comment') || !modSql.includes('delete_internal_support_ticket_comment')) {
+      errors.push("Comment moderation migration is missing the edit/delete RPCs");
+    }
+    if (!/created_by_author_id IS DISTINCT FROM p_author_id/.test(modSql)) {
+      errors.push("Comment moderation migration does not enforce author-only edit");
+    }
+    if (!/'Embark Digitals'/.test(modSql)) {
+      errors.push("Comment moderation delete does not carry the Embark Digitals override authority");
+    }
+    if (!/activity_type IS DISTINCT FROM 'comment'/.test(modSql)) {
+      errors.push("Comment moderation does not protect system entries (audit trail) from edit/delete");
+    }
+    if (!/edited_at/.test(modSql) || !/DROP FUNCTION IF EXISTS get_internal_support_ticket_comments/.test(modSql)) {
+      errors.push("Comment moderation migration must add edited_at and recreate the read function (return-type change needs DROP)");
+    }
+    if (!/WHERE ua\.id = p_author_id/.test(modSql)) {
+      errors.push("Comment moderation read recreation must keep the author lookup table-qualified (42702 regression)");
+    }
+    if (/USING \(true\)|service_role/.test(modSql)) {
+      errors.push("Comment moderation migration adds a forbidden broad policy or service_role reference");
+    }
+  }
+
+  // 27c. Frontend wiring: service functions + inline moderation UI with
+  // honest pending-migration errors.
+  if (!serviceV19.includes('updateInternalSupportTicketComment') || !serviceV19.includes('deleteInternalSupportTicketComment')) {
+    errors.push("collaborationService.js is missing the comment moderation functions");
+  }
+  if (!supportV19.includes('handleSaveCommentEdit') || !supportV19.includes('handleDeleteComment')) {
+    errors.push("SupportIssues.jsx is missing the comment edit/delete handlers");
+  }
+  if (!/explainDbError\(err, 'supabase\/support_ticket_comment_moderation\.sql'\)/.test(supportV19)) {
+    errors.push("SupportIssues.jsx comment moderation errors do not name the pending migration");
+  }
+  if (!/canDeleteComment = isInternalOperator && isPlainComment && \(isOwnComment \|\| isEmbarkEditor\)/.test(supportV19)) {
+    errors.push("SupportIssues.jsx comment delete visibility must be own-or-Embark on plain comments only");
+  }
+
   if (errors.length > 0) {
     console.error("❌ Validation Failed. Errors:");
     errors.forEach(e => console.error(`  - ${e}`));

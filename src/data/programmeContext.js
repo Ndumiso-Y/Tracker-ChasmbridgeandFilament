@@ -56,6 +56,14 @@ export const RETIRED_TEMPLATE_IDS = [
   'template-presentation',
 ];
 
+// Secure Sign In (Magic Link client/admin sessions) is HIDDEN for now by
+// product owner decision (2026-07-10): the workflow runs entirely on the
+// no-session Active Editor persona until client sign-ins are called up
+// again. Flip to true to restore the sidebar Secure Sign In entry, the
+// Client Access admin surface, and the sign-in-oriented helper copy.
+// Nothing is deleted — routes, views, RPCs and RLS all stay intact.
+export const SECURE_SIGN_IN_ENABLED = false;
+
 export const INPUT_URGENCY = [
   "Normal",
   "Time Sensitive",

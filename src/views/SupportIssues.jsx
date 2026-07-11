@@ -68,6 +68,11 @@ export default function SupportIssues({ selectedAuthorId = "", authors = [], onS
   // internal users can reveal them. Removal is Embark-only.
   const [showArchivedTickets, setShowArchivedTickets] = useState(false);
   const [retentionBusy, setRetentionBusy] = useState(false);
+  // Inline comment moderation: edit is author-only, delete author-or-Embark
+  // (mirrors the server rules in support_ticket_comment_moderation.sql).
+  const [editingCommentId, setEditingCommentId] = useState(null);
+  const [editingCommentBody, setEditingCommentBody] = useState('');
+  const [commentBusy, setCommentBusy] = useState(false);
   const isEmbarkEditor = !!authors.find(a => a.id === selectedAuthorId && a.organisation_label === 'Embark Digitals');
 
   // Editing State
@@ -367,6 +372,43 @@ export default function SupportIssues({ selectedAuthorId = "", authors = [], onS
       setCommentError(err.message || 'Your comment could not be posted. It has not been saved — please try again.');
     } finally {
       setActionLoading(false);
+    }
+  };
+
+  // Comment moderation — server re-verifies authority (author-only edit,
+  // author-or-Embark delete, plain comments only).
+  const handleSaveCommentEdit = async () => {
+    if (!editingCommentBody.trim()) return;
+    setCommentBusy(true);
+    setCommentError(null);
+    try {
+      await collaborationService.updateInternalSupportTicketComment(
+        selectedAuthorId, editingCommentId, editingCommentBody.trim()
+      );
+      setEditingCommentId(null);
+      setEditingCommentBody('');
+      await loadComments(selectedTicket.id);
+    } catch (err) {
+      console.error(err);
+      setCommentError(explainDbError(err, 'supabase/support_ticket_comment_moderation.sql'));
+    } finally {
+      setCommentBusy(false);
+    }
+  };
+
+  const handleDeleteComment = async (comment) => {
+    if (!window.confirm('Delete this comment? This cannot be undone.')) return;
+    setCommentBusy(true);
+    setCommentError(null);
+    try {
+      await collaborationService.deleteInternalSupportTicketComment(selectedAuthorId, comment.id);
+      if (editingCommentId === comment.id) setEditingCommentId(null);
+      await loadComments(selectedTicket.id);
+    } catch (err) {
+      console.error(err);
+      setCommentError(explainDbError(err, 'supabase/support_ticket_comment_moderation.sql'));
+    } finally {
+      setCommentBusy(false);
     }
   };
 
@@ -689,18 +731,81 @@ export default function SupportIssues({ selectedAuthorId = "", authors = [], onS
             ) : comments.length === 0 ? (
               <p className="text-slate-400 text-sm text-center">No comments yet.</p>
             ) : (
-              comments.map(c => (
-                <div key={c.id} className={cx(
-                  "p-3 rounded-lg text-sm",
-                  c.activity_type === 'resolution_proposed' ? "bg-emerald-50 border border-emerald-100" : "bg-slate-50 border border-slate-100"
-                )}>
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="font-bold text-navy">{c.author_display_name || c.user_display_name || 'System'}</span>
-                    <span className="text-[10px] text-slate-400">{new Date(c.created_at).toLocaleDateString()}</span>
+              comments.map(c => {
+                // Moderation mirrors the server rules: plain comments only;
+                // edit is author-only; delete is author-or-Embark.
+                const isPlainComment = c.activity_type === 'comment';
+                const isOwnComment = !!selectedAuthorId && c.created_by_author_id === selectedAuthorId;
+                const canEditComment = isInternalOperator && isPlainComment && isOwnComment;
+                const canDeleteComment = isInternalOperator && isPlainComment && (isOwnComment || isEmbarkEditor);
+                const isBeingEdited = editingCommentId === c.id;
+                return (
+                  <div key={c.id} className={cx(
+                    "p-3 rounded-lg text-sm",
+                    c.activity_type === 'resolution_proposed' ? "bg-emerald-50 border border-emerald-100" : "bg-slate-50 border border-slate-100"
+                  )}>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="font-bold text-navy">{c.author_display_name || c.user_display_name || 'System'}</span>
+                      <span className="text-[10px] text-slate-400">
+                        {new Date(c.created_at).toLocaleDateString()}
+                        {c.edited_at ? ' · edited' : ''}
+                      </span>
+                    </div>
+                    {isBeingEdited ? (
+                      <div className="space-y-2">
+                        <textarea
+                          value={editingCommentBody}
+                          onChange={e => setEditingCommentBody(e.target.value)}
+                          rows={3}
+                          className="w-full bg-white border border-slate-300 rounded-lg p-2 text-sm text-slate-800 focus:ring-2 focus:ring-gold/30 focus:border-gold resize-none"
+                        />
+                        <div className="flex gap-2">
+                          <button
+                            onClick={handleSaveCommentEdit}
+                            disabled={commentBusy || !editingCommentBody.trim()}
+                            className="px-3 py-1 text-xs font-bold text-navy bg-gold hover:bg-gold/90 rounded disabled:opacity-50"
+                          >
+                            {commentBusy ? 'Saving…' : 'Save'}
+                          </button>
+                          <button
+                            onClick={() => { setEditingCommentId(null); setEditingCommentBody(''); }}
+                            disabled={commentBusy}
+                            className="px-3 py-1 text-xs font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <p className="text-slate-700 whitespace-pre-wrap">{c.body}</p>
+                        {(canEditComment || canDeleteComment) && (
+                          <div className="mt-1.5 flex gap-3">
+                            {canEditComment && (
+                              <button
+                                onClick={() => { setEditingCommentId(c.id); setEditingCommentBody(c.body); setCommentError(null); }}
+                                disabled={commentBusy}
+                                className="text-[11px] font-bold text-slate-500 hover:text-navy transition"
+                              >
+                                Edit
+                              </button>
+                            )}
+                            {canDeleteComment && (
+                              <button
+                                onClick={() => handleDeleteComment(c)}
+                                disabled={commentBusy}
+                                className="text-[11px] font-bold text-red-400 hover:text-red-600 transition"
+                              >
+                                Delete
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </>
+                    )}
                   </div>
-                  <p className="text-slate-700 whitespace-pre-wrap">{c.body}</p>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
           {!isClosed && (

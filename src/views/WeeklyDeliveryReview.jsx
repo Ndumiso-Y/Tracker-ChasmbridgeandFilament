@@ -3,7 +3,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { collaborationService } from '../services/collaborationService';
 import { Rocket, ChevronRight, ShieldCheck, Plus, X, CheckCircle, Send, AlertCircle, Link2 } from 'lucide-react';
 import { cx } from '../utils/cx';
-import { PROGRAMME_ENTITIES } from '../data/programmeContext';
+import { PROGRAMME_ENTITIES, SECURE_SIGN_IN_ENABLED } from '../data/programmeContext';
 import { reviewResponsibility } from '../utils/responsibility';
 import { ResponsibilityBadge } from '../components/Badge';
 import { explainDbError } from '../utils/dbErrors';
@@ -690,7 +690,10 @@ export default function WeeklyDeliveryReview({ selectedAuthorId = "", authors = 
             )}
           </div>
 
-          {isInternalOperator && selectedReview.review_status === 'Awaiting Client Review' && (
+          {/* Reviewer assignment targets client SIGN-IN accounts, so the whole
+              row is parked with SECURE_SIGN_IN_ENABLED — reviews run
+              unassigned until sign-ins are called back up. */}
+          {SECURE_SIGN_IN_ENABLED && isInternalOperator && selectedReview.review_status === 'Awaiting Client Review' && (
             <div className="p-4 bg-white border-b border-slate-200 flex flex-wrap items-center gap-4">
               <span className="text-sm font-bold text-navy">Assign Reviewer:</span>
               <select
@@ -883,7 +886,9 @@ export default function WeeklyDeliveryReview({ selectedAuthorId = "", authors = 
                   the action silently not existing. */}
               {!isAdmin && isInternalOperator && selectedReview.review_status === 'Submitted' && (
                 <div className="p-4 bg-slate-50 border-t border-slate-200 text-xs text-slate-500">
-                  🔒 Marking this review as Reviewed is an admin disposition — use <span className="font-bold">Secure Sign In</span> as admin to close it out.
+                  {SECURE_SIGN_IN_ENABLED
+                    ? <>🔒 Marking this review as Reviewed is an admin disposition — use <span className="font-bold">Secure Sign In</span> as admin to close it out.</>
+                    : <>🔒 Marking this review as Reviewed is an admin sign-in disposition, and sign-ins are switched off for now — the review stays Submitted, which is fine for the weekly cycle.</>}
                 </div>
               )}
             </>
@@ -1093,7 +1098,9 @@ export default function WeeklyDeliveryReview({ selectedAuthorId = "", authors = 
                 </div>
               </div>
 
-              <div>
+              {/* Contributor assignment targets client SIGN-IN accounts —
+                  parked with SECURE_SIGN_IN_ENABLED; reviews open unassigned. */}
+              {SECURE_SIGN_IN_ENABLED && <div>
                 <label className="block text-sm font-bold text-navy mb-1.5">Assigned Contributor</label>
                 <select
                   value={openForm.contributorUserId}
@@ -1122,7 +1129,7 @@ export default function WeeklyDeliveryReview({ selectedAuthorId = "", authors = 
                     </div>
                   )
                 )}
-              </div>
+              </div>}
 
               {workPreview.length > 0 && (
                 <div>
