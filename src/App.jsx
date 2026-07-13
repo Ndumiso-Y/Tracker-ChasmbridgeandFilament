@@ -201,7 +201,7 @@ function App() {
         { id: 'client_input', label: 'Requests', icon: FileStack },
         // The ongoing Filament review programmes get their own lens —
         // same client_input_requests truth, dedicated discoverability.
-        { id: 'filament_reviews', label: 'Filament Reviews', icon: FileStack },
+        { id: 'filament_reviews', label: 'Reviews', icon: FileStack },
         { id: 'support', label: 'Support & Tickets', icon: ShieldCheck },
         { id: 'weekly_review', label: 'Weekly Reviews', icon: Rocket },
       ]

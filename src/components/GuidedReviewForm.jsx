@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { ChevronLeft, ChevronRight, CheckCircle, Send, AlertCircle } from 'lucide-react';
+import { ChevronLeft, ChevronRight, CheckCircle, Send, AlertCircle, ExternalLink } from 'lucide-react';
 import { collaborationService } from '../services/collaborationService';
 import { cx } from '../utils/cx';
 
@@ -28,8 +28,60 @@ const STATUS_DOT = {
   'No Changes Required': 'bg-emerald-100 text-emerald-700 border-emerald-300',
 };
 
+const WEBSITE_FIELD_LABELS = {
+  current_concern: 'Corrected Wording',
+  remove_this: 'Information to Remove',
+  replacement_copy: 'Information to Add',
+  visual_direction: 'Image or Photograph Change',
+  structure_changes: 'Layout or Section Order Change',
+  additional_comments: 'Additional Comments',
+};
+
+const WEBSITE_EMPHASIS_FIELDS = {
+  people: [
+    ['current_concern', 'Name or Position Change'],
+    ['replacement_copy', 'Biography or Profile Change'],
+    ['visual_direction', 'Photograph Change'],
+    ['structure_changes', 'Person to Add or Remove'],
+    ['additional_comments', 'Additional Comments'],
+  ],
+  facts: [
+    ['current_concern', 'Fact or Figure Correction'],
+    ['replacement_copy', 'Claim Requiring Qualification'],
+    ['remove_this', 'Reference to Add or Remove'],
+    ['additional_comments', 'Additional Comments'],
+  ],
+  header: [
+    ['current_concern', 'Logo or Branding Change'],
+    ['replacement_copy', 'Navigation or Link Change'],
+    ['remove_this', 'Contact Detail Change'],
+    ['visual_direction', 'Social Media Link Change'],
+    ['additional_comments', 'Additional Comments'],
+  ],
+  visual: [
+    ['visual_direction', 'Image or Visual Change'],
+    ['current_concern', 'Diagram Change'],
+    ['structure_changes', 'Colour or Visual Change'],
+    ['additional_comments', 'Additional Comments'],
+  ],
+  programme: [
+    ['current_concern', 'Programme Detail Correction'],
+    ['replacement_copy', 'Eligibility or Qualification Change'],
+    ['remove_this', 'Application Process Change'],
+    ['structure_changes', 'Date or Deadline Change'],
+    ['additional_comments', 'Additional Comments'],
+  ],
+  forms: [
+    ['current_concern', 'Form Field Change'],
+    ['replacement_copy', 'Enquiry Process Change'],
+    ['remove_this', 'Application Requirement Change'],
+    ['additional_comments', 'Confirmation Message Change'],
+  ],
+};
+
 export default function GuidedReviewForm({ request, config, isInternal, selectedAuthorId, onSubmitted }) {
   const items = config.items;
+  const isWebsiteReview = config.reviewKind === 'website';
   const [entries, setEntries] = useState({});
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
@@ -246,6 +298,17 @@ export default function GuidedReviewForm({ request, config, isInternal, selected
     }
   };
 
+  const websiteFieldRows = isWebsiteReview
+    ? (WEBSITE_EMPHASIS_FIELDS[currentItem?.emphasis] || [
+      ['current_concern', WEBSITE_FIELD_LABELS.current_concern],
+      ['replacement_copy', WEBSITE_FIELD_LABELS.replacement_copy],
+      ['remove_this', WEBSITE_FIELD_LABELS.remove_this],
+      ['visual_direction', WEBSITE_FIELD_LABELS.visual_direction],
+      ['structure_changes', WEBSITE_FIELD_LABELS.structure_changes],
+      ['additional_comments', WEBSITE_FIELD_LABELS.additional_comments],
+    ])
+    : [];
+
   if (loading) return <div className="p-6 text-slate-500">Loading review progress...</div>;
   if (loadError) return <div className="m-6 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">{loadError}</div>;
   if (isInternal && !selectedAuthorId && !isSubmittedState) {
@@ -381,7 +444,7 @@ export default function GuidedReviewForm({ request, config, isInternal, selected
                   disabled={counts.notReviewed > 0 || submitting || !canEdit}
                   className="flex items-center gap-2 px-6 py-2.5 text-sm font-bold text-navy bg-gold hover:bg-gold/90 rounded-lg shadow-md shadow-gold/20 transition-all disabled:opacity-50"
                 >
-                  <Send className="w-4 h-4" /> {submitting ? 'Submitting...' : 'Submit All Feedback to Embark'}
+                  <Send className="w-4 h-4" /> {submitting ? 'Submitting...' : (config.submitLabel || 'Submit All Feedback to Embark')}
                 </button>
               </div>
             </>
@@ -406,8 +469,56 @@ export default function GuidedReviewForm({ request, config, isInternal, selected
         {currentItem.group && <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">{currentItem.group.replace(/^Section \d+ — /, '')}</p>}
         <h3 className="text-xl font-bold text-navy mb-4">{currentItem.title}</h3>
 
+        {isWebsiteReview && (
+          <div className="mb-5 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-xs font-black uppercase tracking-wide text-slate-400">Page</p>
+                <p className="text-sm font-bold text-navy">{currentItem.page}</p>
+              </div>
+              <a
+                href={currentItem.liveUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold text-navy hover:border-gold hover:bg-gold/10"
+              >
+                Open Live Page <ExternalLink className="h-3.5 w-3.5" />
+              </a>
+            </div>
+            {currentItem.approvalRequired && (
+              <p className="mt-3 inline-flex rounded-full border border-gold/40 bg-gold/10 px-2.5 py-1 text-[10px] font-black uppercase tracking-wide text-[#795000]">
+                Facts and details require approval
+              </p>
+            )}
+            {currentItem.contentStatus && (
+              <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                <p className="text-xs font-black uppercase tracking-wide text-slate-400">Content Status</p>
+                <p className="mt-0.5 text-sm font-bold text-navy">{currentItem.contentStatus}</p>
+              </div>
+            )}
+            <div className="mt-4 grid gap-4 md:grid-cols-3">
+              <div>
+                <p className="text-xs font-black uppercase tracking-wide text-slate-400">Current Website Content</p>
+                <p className="mt-1 text-sm leading-relaxed text-slate-700">{currentItem.contentSummary}</p>
+              </div>
+              <div>
+                <p className="text-xs font-black uppercase tracking-wide text-slate-400">Visible Elements</p>
+                <ul className="mt-1 space-y-1 text-sm text-slate-700">
+                  {(currentItem.visibleElements || []).map(element => <li key={element}>- {element}</li>)}
+                </ul>
+              </div>
+              <div>
+                <p className="text-xs font-black uppercase tracking-wide text-slate-400">What to Review</p>
+                <ul className="mt-1 space-y-1 text-sm text-slate-700">
+                  {(currentItem.reviewFocus || []).map(focus => <li key={focus}>- {focus}</li>)}
+                </ul>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="mb-5">
-          <p className="text-sm font-bold text-navy mb-2">Are changes required?</p>
+          <p className="text-sm font-bold text-navy mb-2">Review Status</p>
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
@@ -418,7 +529,7 @@ export default function GuidedReviewForm({ request, config, isInternal, selected
                 changesChoice === 'yes' ? "bg-gold border-gold text-navy" : "bg-white border-slate-200 text-slate-600 hover:border-gold"
               )}
             >
-              Yes — Changes Required
+              Changes Required
             </button>
             <button
               type="button"
@@ -429,13 +540,35 @@ export default function GuidedReviewForm({ request, config, isInternal, selected
                 changesChoice === 'na' ? "bg-emerald-100 border-emerald-300 text-emerald-800" : "bg-white border-slate-200 text-slate-600 hover:border-emerald-300"
               )}
             >
-              N/A — No Changes Required
+              No Changes Required
             </button>
           </div>
         </div>
 
         {changesChoice === 'yes' && (
           <div className="space-y-4 mb-5">
+            {isWebsiteReview && (
+              <>
+                {websiteFieldRows.map(([key, label]) => (
+                  <GuidedField
+                    key={`${currentItem.key}-${key}-${label}`}
+                    label={label}
+                    value={fields[key]}
+                    onChange={(v) => setFields(p => ({ ...p, [key]: v }))}
+                    disabled={!canEdit}
+                    rows={key === 'replacement_copy' || key === 'additional_comments' ? 4 : 2}
+                  />
+                ))}
+                {!websiteFieldRows.some(([key]) => key === 'copy_treatment') && (
+                  <GuidedField label="Logo or Branding Change" value={fields.copy_treatment} onChange={(v) => setFields(p => ({ ...p, copy_treatment: v }))} disabled={!canEdit} />
+                )}
+                {!websiteFieldRows.some(([key]) => key === 'additional_comments') && (
+                  <GuidedField label="Button, Link or Contact Detail Change" value={fields.additional_comments} onChange={(v) => setFields(p => ({ ...p, additional_comments: v }))} disabled={!canEdit} />
+                )}
+              </>
+            )}
+            {!isWebsiteReview && (
+              <>
             <GuidedField label="Current Concern" value={fields.current_concern} onChange={(v) => setFields(p => ({ ...p, current_concern: v }))} disabled={!canEdit} />
             <GuidedField label="Remove This" value={fields.remove_this} onChange={(v) => setFields(p => ({ ...p, remove_this: v }))} disabled={!canEdit} />
             <GuidedField label="Replace with This Exact Wording" value={fields.replacement_copy} onChange={(v) => setFields(p => ({ ...p, replacement_copy: v }))} disabled={!canEdit} rows={4} />
@@ -455,6 +588,8 @@ export default function GuidedReviewForm({ request, config, isInternal, selected
             <GuidedField label="Image / Visual Direction" value={fields.visual_direction} onChange={(v) => setFields(p => ({ ...p, visual_direction: v }))} disabled={!canEdit} />
             <GuidedField label="Order / Structure Changes" value={fields.structure_changes} onChange={(v) => setFields(p => ({ ...p, structure_changes: v }))} disabled={!canEdit} />
             <GuidedField label="Additional Comments" value={fields.additional_comments} onChange={(v) => setFields(p => ({ ...p, additional_comments: v }))} disabled={!canEdit} />
+              </>
+            )}
           </div>
         )}
 
@@ -476,7 +611,7 @@ export default function GuidedReviewForm({ request, config, isInternal, selected
             disabled={index === 0}
             className="flex items-center gap-1.5 px-4 py-2 text-sm font-bold text-slate-600 hover:text-navy bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors disabled:opacity-40"
           >
-            <ChevronLeft className="w-4 h-4" /> Back
+            <ChevronLeft className="w-4 h-4" /> Previous
           </button>
           <div className="flex items-center gap-2">
             <button
@@ -493,7 +628,7 @@ export default function GuidedReviewForm({ request, config, isInternal, selected
                 disabled={!canEdit || saveState === 'saving'}
                 className="flex items-center gap-1.5 px-5 py-2 text-sm font-bold text-navy bg-gold hover:bg-gold/90 rounded-lg shadow-md shadow-gold/20 transition-all disabled:opacity-60"
               >
-                {saveState === 'saving' ? 'Saving...' : 'Save & Next'} <ChevronRight className="w-4 h-4" />
+                {saveState === 'saving' ? 'Saving...' : (isWebsiteReview ? 'Save & Continue' : 'Save & Next')} <ChevronRight className="w-4 h-4" />
               </button>
             ) : (
               <button

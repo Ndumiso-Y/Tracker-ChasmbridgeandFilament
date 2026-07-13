@@ -1918,6 +1918,193 @@ function validate() {
     errors.push("WeeklyDeliveryReview.jsx submit errors do not use product-safe contract language");
   }
 
+  // ==========================================================================
+  // 29. Filament Website Review v1 — same guided-review architecture, no
+  //     second database, 32 stable website sections, version-aware server
+  //     completeness, and no client-facing implementation language.
+  // ==========================================================================
+  const websiteTemplateId = 'template-filament-website-review-v1';
+  const websiteMigrationPath = path.join(__dirname, '../supabase/filament_website_review_v1.sql');
+  const guidedCfgV20 = fs.readFileSync(path.join(__dirname, '../src/data/guidedReviewConfigs.js'), 'utf8');
+  const websiteStart = guidedCfgV20.indexOf(`'${websiteTemplateId}':`);
+  const chasmTemplateId = 'template-chasm-bridge-website-review-v1';
+  const chasmStartForWebsiteSlice = guidedCfgV20.indexOf(`'${chasmTemplateId}':`);
+  if (websiteStart === -1) {
+    errors.push("guidedReviewConfigs.js is missing Filament Website Review v1");
+  } else {
+    const websiteBlock = guidedCfgV20.slice(websiteStart, chasmStartForWebsiteSlice === -1 ? undefined : chasmStartForWebsiteSlice);
+    const websiteItems = (websiteBlock.match(/key: 'website-/g) || []).length;
+    if (websiteItems !== 32) errors.push(`Website Review v1 inventory defines ${websiteItems} sections, expected 32`);
+
+    const keys = [...websiteBlock.matchAll(/key: '([^']+)'/g)].map(m => m[1]).filter(k => k.startsWith('website-'));
+    if (new Set(keys).size !== keys.length) errors.push("Website Review v1 contains duplicate stable keys");
+    ['page:', 'title:', 'contentSummary:', 'visibleElements:', 'reviewFocus:', 'liveUrl:', 'group:'].forEach(token => {
+      const count = (websiteBlock.match(new RegExp(token.replace(':', ':').replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
+      if (count < 32) errors.push(`Website Review v1 is missing ${token} on one or more sections`);
+    });
+    const expectedGroups = {
+      'Global Website Elements': 2,
+      'Home': 4,
+      'About': 3,
+      'What We Do': 4,
+      'Our Approach': 5,
+      'People and Leadership': 3,
+      'Insights and Evidence': 7,
+      'Contact': 4,
+    };
+    Object.entries(expectedGroups).forEach(([group, expected]) => {
+      const actual = (websiteBlock.match(new RegExp(`group: '${group}'`, 'g')) || []).length;
+      if (actual !== expected) errors.push(`Website Review v1 group "${group}" has ${actual} sections, expected ${expected}`);
+    });
+    if (!/approvalRequired: true/.test(websiteBlock)) {
+      errors.push("Website Review v1 has no visible facts/details approval flags");
+    }
+  }
+
+  const profileItems = (guidedCfgV20.match(/key: 'page-/g) || []).length;
+  if (profileItems !== 16) errors.push(`Company Profile config defines ${profileItems} pages, expected 16`);
+  const v1StartV20 = guidedCfgV20.indexOf("'template-filament-slides-review':");
+  const v2StartV20 = guidedCfgV20.indexOf("'template-filament-slides-review-v2':");
+  const websiteStartV20 = guidedCfgV20.indexOf(`'${websiteTemplateId}':`);
+  if (v1StartV20 !== -1 && v2StartV20 !== -1 && websiteStartV20 !== -1) {
+    const v1SlidesV20 = (guidedCfgV20.slice(v1StartV20, v2StartV20).match(/key: 'slide-/g) || []).length;
+    const v2SlidesV20 = (guidedCfgV20.slice(v2StartV20, websiteStartV20).match(/key: 'slide-/g) || []).length;
+    if (v1SlidesV20 !== 43) errors.push(`Historical presentation config defines ${v1SlidesV20} slides, expected 43`);
+    if (v2SlidesV20 !== 61) errors.push(`Presentation v2 config defines ${v2SlidesV20} slides, expected 61`);
+  }
+
+  if (!fs.existsSync(websiteMigrationPath)) {
+    errors.push("Missing supabase/filament_website_review_v1.sql");
+  } else {
+    const webSql = fs.readFileSync(websiteMigrationPath, 'utf8');
+    const webCode = webSql.split('\n').filter(line => !line.trim().startsWith('--')).join('\n');
+    if (!webCode.includes(websiteTemplateId)) {
+      errors.push("Website Review v1 migration does not seed the website template row");
+    }
+    const websiteGates = (webCode.match(/WHEN 'template-filament-website-review-v1' THEN 32/g) || []).length;
+    if (websiteGates !== 2) errors.push(`Website Review v1 migration defines the 32 gate ${websiteGates} times, expected 2`);
+    ['template-filament-profile-review', 'template-filament-slides-review', 'template-filament-slides-review-v2'].forEach(id => {
+      if (!webCode.includes(id)) errors.push(`Website Review v1 migration does not preserve expected-count mapping for ${id}`);
+    });
+    if (/CREATE TABLE|DROP TABLE|TRUNCATE|DELETE FROM/i.test(webCode)) {
+      errors.push("Website Review v1 migration contains a destructive table operation");
+    }
+  }
+
+  const lensV20 = fs.readFileSync(path.join(__dirname, '../src/views/FilamentReviews.jsx'), 'utf8');
+  if (!lensV20.includes(websiteTemplateId) || !lensV20.includes('Filament Website')) {
+    errors.push("FilamentReviews.jsx does not surface the Website Review programme card");
+  }
+  if (!lensV20.includes('Start ${prog.actionTitle || prog.title}') || !lensV20.includes('Continue ${prog.actionTitle}')) {
+    errors.push("FilamentReviews.jsx is missing Start/Continue Website Review action wiring");
+  }
+  const guidedFormV20 = fs.readFileSync(path.join(__dirname, '../src/components/GuidedReviewForm.jsx'), 'utf8');
+  ['Current Website Content', 'What to Review', 'Open Live Page', 'Save & Continue', 'Submit Website Feedback to Embark', 'Facts and details require approval'].forEach(copy => {
+    if (!guidedFormV20.includes(copy) && !guidedCfgV20.includes(copy)) {
+      errors.push(`Website Review client-facing copy is missing: ${copy}`);
+    }
+  });
+  const renderedSources = [lensV20, guidedFormV20]
+    .join('\n')
+    .split('\n')
+    .filter(line => !line.trim().startsWith('//'))
+    .join('\n');
+  if (/Supabase|migration|SQL Editor/.test(renderedSources)) {
+    errors.push("Website Review rendered surfaces may expose implementation language to clients");
+  }
+
+  // ==========================================================================
+  // 30. Chasm Bridge Charity Website Review v1 - second website review
+  //     programme under the shared Reviews lens, with a 31-section contract.
+  // ==========================================================================
+  const chasmMigrationPath = path.join(__dirname, '../supabase/chasm_bridge_website_review_v1.sql');
+  const chasmStart = guidedCfgV20.indexOf(`'${chasmTemplateId}':`);
+  if (chasmStart === -1) {
+    errors.push("guidedReviewConfigs.js is missing Chasm Bridge Charity Website Review v1");
+  } else {
+    const chasmBlock = guidedCfgV20.slice(chasmStart);
+    const chasmItems = (chasmBlock.match(/key: 'chasm-website-/g) || []).length;
+    if (chasmItems !== 31) errors.push(`Chasm Bridge Website Review v1 inventory defines ${chasmItems} sections, expected 31`);
+
+    const chasmKeys = [...chasmBlock.matchAll(/key: '([^']+)'/g)].map(m => m[1]).filter(k => k.startsWith('chasm-website-'));
+    if (new Set(chasmKeys).size !== chasmKeys.length) errors.push("Chasm Bridge Website Review v1 contains duplicate stable keys");
+    ['page:', 'title:', 'contentSummary:', 'contentStatus:', 'visibleElements:', 'reviewFocus:', 'liveUrl:', 'group:'].forEach(token => {
+      const count = (chasmBlock.match(new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
+      if (count < 31) errors.push(`Chasm Bridge Website Review v1 is missing ${token} on one or more sections`);
+    });
+    const chasmExpectedGroups = {
+      'Global Website Elements': 2,
+      'Home': 8,
+      'About': 3,
+      'Our Programme': 3,
+      'Graduate Pathway': 3,
+      'Impact': 3,
+      'Get Involved': 4,
+      'Contact': 2,
+      'Frequently Asked Questions': 1,
+      'Digital Business Cards': 2,
+    };
+    Object.entries(chasmExpectedGroups).forEach(([group, expected]) => {
+      const actual = (chasmBlock.match(new RegExp(`group: '${group}'`, 'g')) || []).length;
+      if (actual !== expected) errors.push(`Chasm Bridge Website Review v1 group "${group}" has ${actual} sections, expected ${expected}`);
+    });
+    if (!chasmBlock.includes('chasm-website-digital-card-dr-rudy') || !chasmBlock.includes('chasm-website-digital-card-jazzmin')) {
+      errors.push("Chasm Bridge Website Review v1 must keep Dr Rudy and Jazzmin digital business cards as separate review sections");
+    }
+    if (!/Placeholder - Replacement Required/.test(chasmBlock) || !/Incomplete - Client Direction Required/.test(chasmBlock)) {
+      errors.push("Chasm Bridge Website Review v1 is missing required placeholder/incomplete content statuses");
+    }
+    if (!/emphasis: 'programme'/.test(chasmBlock) || !/emphasis: 'forms'/.test(chasmBlock) || !/emphasis: 'people'/.test(chasmBlock) || !/emphasis: 'facts'/.test(chasmBlock)) {
+      errors.push("Chasm Bridge Website Review v1 is missing programme, forms, people or facts review emphasis coverage");
+    }
+  }
+
+  if (!fs.existsSync(chasmMigrationPath)) {
+    errors.push("Missing supabase/chasm_bridge_website_review_v1.sql");
+  } else {
+    const chasmSql = fs.readFileSync(chasmMigrationPath, 'utf8');
+    const chasmCode = chasmSql.split('\n').filter(line => !line.trim().startsWith('--')).join('\n');
+    if (!chasmCode.includes(chasmTemplateId)) {
+      errors.push("Chasm Bridge Website Review v1 migration does not seed the website template row");
+    }
+    const chasmGates = (chasmCode.match(/WHEN 'template-chasm-bridge-website-review-v1' THEN 31/g) || []).length;
+    if (chasmGates !== 2) errors.push(`Chasm Bridge Website Review v1 migration defines the 31 gate ${chasmGates} times, expected 2`);
+    [
+      "WHEN 'template-filament-profile-review' THEN 16",
+      "WHEN 'template-filament-slides-review' THEN 43",
+      "WHEN 'template-filament-slides-review-v2' THEN 61",
+      "WHEN 'template-filament-website-review-v1' THEN 32",
+    ].forEach(mapping => {
+      if (!chasmCode.includes(mapping)) errors.push(`Chasm Bridge Website Review v1 migration does not preserve expected-count mapping: ${mapping}`);
+    });
+    if (/CREATE TABLE|DROP TABLE|TRUNCATE|DELETE FROM/i.test(chasmCode)) {
+      errors.push("Chasm Bridge Website Review v1 migration contains a destructive table operation");
+    }
+  }
+
+  const appV21 = fs.readFileSync(path.join(__dirname, '../src/App.jsx'), 'utf8');
+  const lensV21 = fs.readFileSync(path.join(__dirname, '../src/views/FilamentReviews.jsx'), 'utf8');
+  if (!appV21.includes("label: 'Reviews'")) {
+    errors.push("Sidebar does not expose the shared Reviews lens label");
+  }
+  if (!lensV21.includes('Chasm Bridge Charity') || !lensV21.includes(chasmTemplateId)) {
+    errors.push("Reviews lens does not surface the Chasm Bridge Charity Website Review programme card");
+  }
+  if (!lensV21.includes("entity: prog.entity || 'Filament'")) {
+    errors.push("Reviews lens does not create organisation-specific guided review requests");
+  }
+  ['Programme Detail Correction', 'Eligibility or Qualification Change', 'Form Field Change', 'Confirmation Message Change', 'Content Status'].forEach(copy => {
+    if (!guidedFormV20.includes(copy)) errors.push(`Chasm Website Review form copy is missing: ${copy}`);
+  });
+  const chasmRenderedSources = [lensV21, guidedFormV20]
+    .join('\n')
+    .split('\n')
+    .filter(line => !line.trim().startsWith('//'))
+    .join('\n');
+  if (/Supabase|migration|SQL Editor/.test(chasmRenderedSources)) {
+    errors.push("Chasm Website Review rendered surfaces may expose implementation language to clients");
+  }
+
   if (errors.length > 0) {
     console.error("❌ Validation Failed. Errors:");
     errors.forEach(e => console.error(`  - ${e}`));

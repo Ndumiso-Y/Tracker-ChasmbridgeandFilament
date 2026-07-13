@@ -42,6 +42,8 @@ export const GUIDED_REVIEW_ACTION_LABELS = {
   'template-filament-profile-review': 'Next: Review Company Profile',
   'template-filament-slides-review': 'Next: Review Presentation',
   'template-filament-slides-review-v2': 'Next: Review Presentation',
+  'template-filament-website-review-v1': 'Next: Review Website',
+  'template-chasm-bridge-website-review-v1': 'Next: Review Website',
 };
 
 // Retired templates (V4A.16): kept in the database for historical persisted

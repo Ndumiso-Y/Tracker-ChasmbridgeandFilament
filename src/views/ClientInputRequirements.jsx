@@ -61,6 +61,8 @@ const TEMPLATE_DISPLAY_LABELS = {
   'template-filament-profile-review': 'Filament Company Profile Review',
   'template-filament-slides-review': 'Filament Presentation Review (43-slide, historical)',
   'template-filament-slides-review-v2': 'Filament Presentation Review',
+  'template-filament-website-review-v1': 'Filament Website Review',
+  'template-chasm-bridge-website-review-v1': 'Chasm Bridge Charity Website Review',
 };
 
 export default function ClientInputRequirements({ selectedAuthorId = "", updateAuthors = [], onSelectAuthor = null, targetRecordId = null, onRecordTargetConsumed = null }) {
@@ -1370,7 +1372,7 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
 
       {guidedCount > 0 && (
         <div className="mb-4 rounded-lg border border-navy/15 bg-navy/[0.04] px-4 py-2.5 text-sm text-navy">
-          The Filament Company Profile and Presentation review programmes live under <span className="font-bold">Filament Reviews</span> in the sidebar.
+          Structured review programmes live under <span className="font-bold">Reviews</span> in the sidebar.
         </div>
       )}
 
