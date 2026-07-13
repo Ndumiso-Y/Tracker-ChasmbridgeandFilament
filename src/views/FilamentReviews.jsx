@@ -6,7 +6,7 @@ import { requestResponsibility, RESPONSIBILITY } from '../utils/responsibility';
 import { ResponsibilityBadge } from '../components/Badge';
 import { displayRequestStatus } from '../utils/statusLanguage';
 import { cx } from '../utils/cx';
-import { BookOpen, Presentation, Globe2, ChevronRight, CheckCircle, ExternalLink } from 'lucide-react';
+import { BookOpen, Presentation, Globe2, CalendarCheck, ChevronRight, CheckCircle, ExternalLink } from 'lucide-react';
 
 // Reviews lens (V4A.15): structured Company Profile, Presentation and Website
 // reviews are ongoing, high-value programmes, not transactional requests.
@@ -49,6 +49,19 @@ const PROGRAMMES = [
     setupPendingMessage: 'The Website Review workspace has not been activated yet. Once activated, you can start and continue the review directly from here.',
   },
   {
+    organisation: 'Filament',
+    entity: 'Filament',
+    templateIds: ['template-filament-social-media-strategy-review-v1'],
+    createTemplateId: 'template-filament-social-media-strategy-review-v1',
+    title: '3-Month Social Media Strategy',
+    actionTitle: 'Strategy Review',
+    unit: 'sections',
+    icon: CalendarCheck,
+    description: 'Review the strategic direction, audiences, technical content pillars, monthly calendar, calls to action, approval workflow and measurement plan for 13 July-13 October 2026.',
+    setupPendingTitle: 'Strategy Review Setup Pending',
+    setupPendingMessage: 'The Filament Social Media Strategy Review workspace has not been activated yet. Once activated, you can start and continue the review directly from here.',
+  },
+  {
     organisation: 'Chasm Bridge Charity',
     entity: 'Chasm Bridge Charity',
     templateIds: ['template-chasm-bridge-website-review-v1'],
@@ -61,6 +74,19 @@ const PROGRAMMES = [
     liveUrl: 'https://www.chasmbridgecharity.org',
     setupPendingTitle: 'Chasm Website Review Setup Pending',
     setupPendingMessage: 'The Chasm Bridge Charity Website Review workspace has not been activated yet. Once activated, you can start and continue the review directly from here.',
+  },
+  {
+    organisation: 'Chasm Bridge Charity',
+    entity: 'Chasm Bridge Charity',
+    templateIds: ['template-chasm-bridge-social-media-strategy-review-v1'],
+    createTemplateId: 'template-chasm-bridge-social-media-strategy-review-v1',
+    title: '3-Month Social Media Strategy',
+    actionTitle: 'Strategy Review',
+    unit: 'sections',
+    icon: CalendarCheck,
+    description: 'Review the graduate-development messaging, audiences, monthly calendar, sponsor and funder communication, approval workflow and measurement plan for 13 July-13 October 2026.',
+    setupPendingTitle: 'Strategy Review Setup Pending',
+    setupPendingMessage: 'The Chasm Bridge Charity Social Media Strategy Review workspace has not been activated yet. Once activated, you can start and continue the review directly from here.',
   },
 ];
 

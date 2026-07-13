@@ -63,6 +63,8 @@ const TEMPLATE_DISPLAY_LABELS = {
   'template-filament-slides-review-v2': 'Filament Presentation Review',
   'template-filament-website-review-v1': 'Filament Website Review',
   'template-chasm-bridge-website-review-v1': 'Chasm Bridge Charity Website Review',
+  'template-filament-social-media-strategy-review-v1': 'Filament 3-Month Social Media Strategy Review',
+  'template-chasm-bridge-social-media-strategy-review-v1': 'Chasm Bridge Charity 3-Month Social Media Strategy Review',
 };
 
 export default function ClientInputRequirements({ selectedAuthorId = "", updateAuthors = [], onSelectAuthor = null, targetRecordId = null, onRecordTargetConsumed = null }) {

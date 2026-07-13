@@ -28,6 +28,8 @@ const STATUS_DOT = {
   'No Changes Required': 'bg-emerald-100 text-emerald-700 border-emerald-300',
 };
 
+const DISCUSS_MARKER = 'DISCUSS IN MEETING:';
+
 const WEBSITE_FIELD_LABELS = {
   current_concern: 'Corrected Wording',
   remove_this: 'Information to Remove',
@@ -82,13 +84,14 @@ const WEBSITE_EMPHASIS_FIELDS = {
 export default function GuidedReviewForm({ request, config, isInternal, selectedAuthorId, onSubmitted }) {
   const items = config.items;
   const isWebsiteReview = config.reviewKind === 'website';
+  const isStrategyReview = config.reviewKind === 'social-strategy';
   const [entries, setEntries] = useState({});
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
   const [index, setIndex] = useState(0);
   const [showSummary, setShowSummary] = useState(false);
   const [fields, setFields] = useState(EMPTY_FIELDS);
-  const [changesChoice, setChangesChoice] = useState(null); // 'yes' | 'na' | null
+  const [changesChoice, setChangesChoice] = useState(null); // 'yes' | 'na' | 'discuss' | null
   const [saveState, setSaveState] = useState(null); // 'saving' | 'saved' | 'failed'
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState(null);
@@ -135,6 +138,9 @@ export default function GuidedReviewForm({ request, config, isInternal, selected
     if (!currentItem) return;
     const entry = entries[currentItem.key];
     if (entry) {
+      const isDiscussEntry = isStrategyReview
+        && entry.review_status === 'Changes Added'
+        && (entry.additional_comments || '').startsWith(DISCUSS_MARKER);
       setFields({
         current_concern: entry.current_concern || '',
         remove_this: entry.remove_this || '',
@@ -142,9 +148,11 @@ export default function GuidedReviewForm({ request, config, isInternal, selected
         copy_treatment: entry.copy_treatment || '',
         visual_direction: entry.visual_direction || '',
         structure_changes: entry.structure_changes || '',
-        additional_comments: entry.additional_comments || '',
+        additional_comments: isDiscussEntry
+          ? (entry.additional_comments || '').replace(DISCUSS_MARKER, '').trim()
+          : entry.additional_comments || '',
       });
-      setChangesChoice(entry.review_status === 'Changes Added' ? 'yes' : entry.review_status === 'No Changes Required' ? 'na' : null);
+      setChangesChoice(isDiscussEntry ? 'discuss' : entry.review_status === 'Changes Added' ? 'yes' : entry.review_status === 'No Changes Required' ? 'na' : null);
     } else {
       setFields(EMPTY_FIELDS);
       setChangesChoice(null);
@@ -163,8 +171,23 @@ export default function GuidedReviewForm({ request, config, isInternal, selected
     return { total: items.length, changesAdded, noChanges, notReviewed: items.length - changesAdded - noChanges };
   })();
 
-  const persistEntry = async (item, reviewStatus, f) => {
+  const prepareFieldsForPersist = (reviewStatus, f, choice = changesChoice) => {
+    if (!isStrategyReview) return f;
+    const next = { ...EMPTY_FIELDS, ...f };
+    if (reviewStatus === 'No Changes Required') return EMPTY_FIELDS;
+    if (choice === 'discuss') {
+      const discussion = (next.additional_comments || '').replace(DISCUSS_MARKER, '').trim();
+      return {
+        ...EMPTY_FIELDS,
+        additional_comments: discussion ? `${DISCUSS_MARKER} ${discussion}` : DISCUSS_MARKER,
+      };
+    }
+    return next;
+  };
+
+  const persistEntry = async (item, reviewStatus, f, choice = changesChoice) => {
     setSaveState('saving');
+    const preparedFields = prepareFieldsForPersist(reviewStatus, f, choice);
     try {
       let row;
       if (isInternal) {
@@ -177,13 +200,13 @@ export default function GuidedReviewForm({ request, config, isInternal, selected
           reviewItemTitle: item.title,
           reviewGroup: item.group,
           reviewStatus,
-          currentConcern: f.current_concern,
-          removeThis: f.remove_this,
-          replacementCopy: f.replacement_copy,
-          copyTreatment: f.copy_treatment,
-          visualDirection: f.visual_direction,
-          structureChanges: f.structure_changes,
-          additionalComments: f.additional_comments,
+          currentConcern: preparedFields.current_concern,
+          removeThis: preparedFields.remove_this,
+          replacementCopy: preparedFields.replacement_copy,
+          copyTreatment: preparedFields.copy_treatment,
+          visualDirection: preparedFields.visual_direction,
+          structureChanges: preparedFields.structure_changes,
+          additionalComments: preparedFields.additional_comments,
         });
       } else {
         row = await collaborationService.upsertReviewEntry({
@@ -194,13 +217,13 @@ export default function GuidedReviewForm({ request, config, isInternal, selected
           review_item_title: item.title,
           review_group: item.group,
           review_status: reviewStatus,
-          current_concern: f.current_concern || null,
-          remove_this: f.remove_this || null,
-          replacement_copy: f.replacement_copy || null,
-          copy_treatment: f.copy_treatment || null,
-          visual_direction: f.visual_direction || null,
-          structure_changes: f.structure_changes || null,
-          additional_comments: f.additional_comments || null,
+          current_concern: preparedFields.current_concern || null,
+          remove_this: preparedFields.remove_this || null,
+          replacement_copy: preparedFields.replacement_copy || null,
+          copy_treatment: preparedFields.copy_treatment || null,
+          visual_direction: preparedFields.visual_direction || null,
+          structure_changes: preparedFields.structure_changes || null,
+          additional_comments: preparedFields.additional_comments || null,
         });
       }
       setEntries(prev => ({ ...prev, [item.key]: row }));
@@ -219,12 +242,12 @@ export default function GuidedReviewForm({ request, config, isInternal, selected
   };
 
   const handleNoChanges = async () => {
-    const ok = await persistEntry(currentItem, 'No Changes Required', EMPTY_FIELDS);
+    const ok = await persistEntry(currentItem, 'No Changes Required', EMPTY_FIELDS, 'na');
     if (ok) advance();
   };
 
   const handleSaveAndNext = async () => {
-    const ok = await persistEntry(currentItem, 'Changes Added', fields);
+    const ok = await persistEntry(currentItem, 'Changes Added', fields, changesChoice);
     if (ok) advance();
   };
 
@@ -246,12 +269,12 @@ export default function GuidedReviewForm({ request, config, isInternal, selected
     if (!canEdit || showSummary || !currentItem) return false;
     const saved = fieldsOfEntry(entries[currentItem.key]);
     const differs = JSON.stringify(saved) !== JSON.stringify(fields);
-    return differs && (changesChoice === 'yes' || Object.values(fields).some(v => (v || '').trim() !== ''));
+    return differs && (changesChoice === 'yes' || changesChoice === 'discuss' || Object.values(fields).some(v => (v || '').trim() !== ''));
   };
 
   const saveIfDirty = async () => {
     if (!hasUnsavedTyping()) return true;
-    return await persistEntry(currentItem, 'Changes Added', fields);
+    return await persistEntry(currentItem, 'Changes Added', fields, changesChoice);
   };
 
   const navigateTo = async (i) => {
@@ -462,10 +485,15 @@ export default function GuidedReviewForm({ request, config, isInternal, selected
       <div className="p-6">
         <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
           <p className="text-xs font-black uppercase tracking-[0.14em] text-gold">
-            {config.itemNoun} {currentItem.number} of {items.length}
+            {isStrategyReview ? '3-MONTH SOCIAL MEDIA STRATEGY REVIEW' : `${config.itemNoun} ${currentItem.number} of ${items.length}`}
           </p>
           <span className={cx("text-[10px] font-bold px-2 py-0.5 rounded-full border", STATUS_DOT[entryStatus])}>{entryStatus}</span>
         </div>
+        {isStrategyReview && (
+          <p className="mb-1 text-xs font-black uppercase tracking-wide text-slate-400">
+            {config.itemNoun} {currentItem.number} of {items.length}
+          </p>
+        )}
         {currentItem.group && <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">{currentItem.group.replace(/^Section \d+ — /, '')}</p>}
         <h3 className="text-xl font-bold text-navy mb-4">{currentItem.title}</h3>
 
@@ -517,6 +545,84 @@ export default function GuidedReviewForm({ request, config, isInternal, selected
           </div>
         )}
 
+        {isStrategyReview && (
+          <div className="mb-5 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div>
+                <p className="text-xs font-black uppercase tracking-wide text-slate-400">Organisation</p>
+                <p className="text-sm font-bold text-navy">{currentItem.organisation}</p>
+              </div>
+              <div>
+                <p className="text-xs font-black uppercase tracking-wide text-slate-400">Strategy Period</p>
+                <p className="text-sm font-bold text-navy">{currentItem.strategyPeriod}</p>
+              </div>
+              <div>
+                <p className="text-xs font-black uppercase tracking-wide text-slate-400">Section</p>
+                <p className="text-sm font-bold text-navy">Section {currentItem.number} of {items.length}</p>
+              </div>
+            </div>
+
+            <div className="mt-4 grid gap-4 lg:grid-cols-3">
+              <div>
+                <p className="text-xs font-black uppercase tracking-wide text-slate-400">Current Strategy Summary</p>
+                <p className="mt-1 text-sm leading-relaxed text-slate-700">{currentItem.currentStrategy}</p>
+              </div>
+              <div>
+                <p className="text-xs font-black uppercase tracking-wide text-slate-400">Key Decisions</p>
+                <ul className="mt-1 space-y-1 text-sm text-slate-700">
+                  {(currentItem.keyDecisions || []).map(decision => <li key={decision}>- {decision}</li>)}
+                </ul>
+              </div>
+              <div>
+                <p className="text-xs font-black uppercase tracking-wide text-slate-400">Review Questions</p>
+                <ul className="mt-1 space-y-1 text-sm text-slate-700">
+                  {(currentItem.reviewQuestions || []).map(question => <li key={question}>- {question}</li>)}
+                </ul>
+              </div>
+            </div>
+
+            {currentItem.approvalFlags?.length > 0 && (
+              <div className="mt-4 rounded-lg border border-gold/30 bg-gold/10 p-3">
+                <p className="text-xs font-black uppercase tracking-wide text-[#795000]">Items Requiring Confirmation</p>
+                <ul className="mt-1 space-y-1 text-sm text-[#5f4300]">
+                  {currentItem.approvalFlags.map(flag => <li key={flag}>- {flag}</li>)}
+                </ul>
+              </div>
+            )}
+
+            {currentItem.calendarRows?.length > 0 && (
+              <div className="mt-4 overflow-x-auto rounded-lg border border-slate-200">
+                <table className="min-w-[760px] w-full text-left text-xs">
+                  <thead className="bg-slate-50 text-slate-500">
+                    <tr>
+                      <th className="p-2 font-black uppercase tracking-wide">Date</th>
+                      <th className="p-2 font-black uppercase tracking-wide">Pillar</th>
+                      <th className="p-2 font-black uppercase tracking-wide">Topic</th>
+                      <th className="p-2 font-black uppercase tracking-wide">Format</th>
+                      <th className="p-2 font-black uppercase tracking-wide">Strategic Purpose</th>
+                      <th className="p-2 font-black uppercase tracking-wide">Audience</th>
+                      <th className="p-2 font-black uppercase tracking-wide">CTA</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {currentItem.calendarRows.map((row, rowIndex) => (
+                      <tr key={`${currentItem.key}-calendar-${rowIndex}`} className="align-top">
+                        <td className="p-2 font-bold text-navy">{row.date}</td>
+                        <td className="p-2 text-slate-700">{row.pillar}</td>
+                        <td className="p-2 text-slate-700">{row.topic}</td>
+                        <td className="p-2 text-slate-700">{row.format}</td>
+                        <td className="p-2 text-slate-700">{row.strategicPurpose}</td>
+                        <td className="p-2 text-slate-700">{row.primaryAudience}</td>
+                        <td className="p-2 text-slate-700">{row.cta}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
         <div className="mb-5">
           <p className="text-sm font-bold text-navy mb-2">Review Status</p>
           <div className="flex flex-wrap gap-2">
@@ -531,6 +637,19 @@ export default function GuidedReviewForm({ request, config, isInternal, selected
             >
               Changes Required
             </button>
+            {isStrategyReview && (
+              <button
+                type="button"
+                disabled={!canEdit}
+                onClick={() => setChangesChoice('discuss')}
+                className={cx(
+                  "px-4 py-2 rounded-lg border text-sm font-bold transition disabled:opacity-60",
+                  changesChoice === 'discuss' ? "bg-slate-800 border-slate-800 text-white" : "bg-white border-slate-200 text-slate-600 hover:border-slate-500"
+                )}
+              >
+                Discuss in Meeting
+              </button>
+            )}
             <button
               type="button"
               disabled={!canEdit || saveState === 'saving'}
@@ -540,13 +659,22 @@ export default function GuidedReviewForm({ request, config, isInternal, selected
                 changesChoice === 'na' ? "bg-emerald-100 border-emerald-300 text-emerald-800" : "bg-white border-slate-200 text-slate-600 hover:border-emerald-300"
               )}
             >
-              No Changes Required
+              {isStrategyReview ? 'Approve This Section' : 'No Changes Required'}
             </button>
           </div>
         </div>
 
-        {changesChoice === 'yes' && (
+        {(changesChoice === 'yes' || changesChoice === 'discuss') && (
           <div className="space-y-4 mb-5">
+            {isStrategyReview && changesChoice === 'yes' && (
+              <>
+                <GuidedField label="What should be changed?" value={fields.current_concern} onChange={(v) => setFields(p => ({ ...p, current_concern: v }))} disabled={!canEdit} rows={4} />
+                <GuidedField label={currentItem.changeHint || 'Optional: specific wording, date, audience or calendar change'} value={fields.replacement_copy} onChange={(v) => setFields(p => ({ ...p, replacement_copy: v }))} disabled={!canEdit} rows={3} />
+              </>
+            )}
+            {isStrategyReview && changesChoice === 'discuss' && (
+              <GuidedField label="What should we discuss?" value={fields.additional_comments} onChange={(v) => setFields(p => ({ ...p, additional_comments: v }))} disabled={!canEdit} rows={4} />
+            )}
             {isWebsiteReview && (
               <>
                 {websiteFieldRows.map(([key, label]) => (
@@ -567,7 +695,7 @@ export default function GuidedReviewForm({ request, config, isInternal, selected
                 )}
               </>
             )}
-            {!isWebsiteReview && (
+            {!isWebsiteReview && !isStrategyReview && (
               <>
             <GuidedField label="Current Concern" value={fields.current_concern} onChange={(v) => setFields(p => ({ ...p, current_concern: v }))} disabled={!canEdit} />
             <GuidedField label="Remove This" value={fields.remove_this} onChange={(v) => setFields(p => ({ ...p, remove_this: v }))} disabled={!canEdit} />
@@ -621,14 +749,14 @@ export default function GuidedReviewForm({ request, config, isInternal, selected
             >
               Review Summary
             </button>
-            {changesChoice === 'yes' ? (
+            {changesChoice === 'yes' || changesChoice === 'discuss' ? (
               <button
                 type="button"
                 onClick={handleSaveAndNext}
                 disabled={!canEdit || saveState === 'saving'}
                 className="flex items-center gap-1.5 px-5 py-2 text-sm font-bold text-navy bg-gold hover:bg-gold/90 rounded-lg shadow-md shadow-gold/20 transition-all disabled:opacity-60"
               >
-                {saveState === 'saving' ? 'Saving...' : (isWebsiteReview ? 'Save & Continue' : 'Save & Next')} <ChevronRight className="w-4 h-4" />
+                {saveState === 'saving' ? 'Saving...' : (isWebsiteReview || isStrategyReview ? 'Save & Continue' : 'Save & Next')} <ChevronRight className="w-4 h-4" />
               </button>
             ) : (
               <button

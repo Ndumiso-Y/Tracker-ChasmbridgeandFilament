@@ -2105,6 +2105,203 @@ function validate() {
     errors.push("Chasm Website Review rendered surfaces may expose implementation language to clients");
   }
 
+  // ==========================================================================
+  // 31. Social Media Strategy Reviews v1 - simplified 14-section guided
+  //     reviews for Filament and Chasm Bridge Charity, with no public document
+  //     exposure and final superset server completeness gates.
+  // ==========================================================================
+  const socialMigrationPath = path.join(__dirname, '../supabase/social_media_strategy_reviews_v1.sql');
+  const filamentSocialTemplateId = 'template-filament-social-media-strategy-review-v1';
+  const chasmSocialTemplateId = 'template-chasm-bridge-social-media-strategy-review-v1';
+  const socialExpectedTitles = [
+    'Cover and Strategic Direction',
+    'Executive Summary and Three-Month Logic',
+    'Publishing Period and Rhythm',
+    'Strategic Objectives and Priority Audiences',
+    'Platform Roles',
+    'Content Pillars',
+    'Follower Growth and Content Production Approach',
+    'Human Content, Consent and Safeguards',
+    'Month 1 Content Calendar',
+    'Month 2 Content Calendar',
+    'Month 3 Content Calendar',
+    'Special Dates and Calls to Action',
+    'Approval Workflow and Measurement',
+    'Risks, Next Steps and Final Strategy Approval',
+  ];
+
+  const getConfigBlock = (templateId, nextTemplateIds = []) => {
+    const start = guidedCfgV20.indexOf(`'${templateId}':`);
+    if (start === -1) return '';
+    const nextStarts = nextTemplateIds
+      .map(id => guidedCfgV20.indexOf(`'${id}':`, start + 1))
+      .filter(i => i !== -1);
+    return guidedCfgV20.slice(start, nextStarts.length ? Math.min(...nextStarts) : undefined);
+  };
+
+  const socialConfigChecks = [
+    {
+      templateId: filamentSocialTemplateId,
+      prefix: 'filament-social-section-',
+      organisation: 'Filament',
+      next: [chasmSocialTemplateId],
+      requiredCopy: [
+        '4Ps wording requires confirmation so all Filament platforms use one approved version.',
+        '13 Aug 2026 SAIIE Awards Gala',
+        'info@filament-transformation.com',
+        'No Improvement-No Gain',
+      ],
+    },
+    {
+      templateId: chasmSocialTemplateId,
+      prefix: 'chasm-social-section-',
+      organisation: 'Chasm Bridge Charity',
+      next: [],
+      requiredCopy: [
+        'info@chasmbridgecharity.com',
+        'info@chasmbridgecharity.org',
+        'recruitment@chasmbridgecharity.com',
+        '40-CV milestone',
+        'support is a pathway, not a guarantee',
+      ],
+    },
+  ];
+
+  socialConfigChecks.forEach(({ templateId, prefix, organisation, next, requiredCopy }) => {
+    const block = getConfigBlock(templateId, next);
+    if (!block) {
+      errors.push(`guidedReviewConfigs.js is missing ${templateId}`);
+      return;
+    }
+    if (!block.includes("reviewKind: 'social-strategy'")) {
+      errors.push(`${templateId} is not marked as a social-strategy review`);
+    }
+    if (!block.includes("submitLabel: 'Submit Strategy Feedback to Embark'")) {
+      errors.push(`${templateId} is missing the strategy submit label`);
+    }
+    const items = (block.match(new RegExp(`key: '${prefix}`, 'g')) || []).length;
+    if (items !== 14) errors.push(`${templateId} defines ${items} sections, expected 14`);
+
+    const keys = [...block.matchAll(/stableItemKey: '([^']+)'/g)].map(m => m[1]).filter(k => k.startsWith(prefix));
+    if (keys.length !== 14) errors.push(`${templateId} does not define 14 stable item keys`);
+    if (new Set(keys).size !== keys.length) errors.push(`${templateId} contains duplicate stable item keys`);
+
+    socialExpectedTitles.forEach(title => {
+      if (!block.includes(`title: '${title}'`)) errors.push(`${templateId} is missing section title: ${title}`);
+    });
+    ['organisation:', 'strategyPeriod:', 'currentStrategy:', 'keyDecisions:', 'reviewQuestions:'].forEach(token => {
+      const count = (block.match(new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
+      if (count < 14) errors.push(`${templateId} is missing ${token} on one or more sections`);
+    });
+    if ((block.match(/strategyPeriod: '13 July 2026 - 13 October 2026'/g) || []).length !== 14) {
+      errors.push(`${templateId} does not preserve the strategy period on every section`);
+    }
+    if ((block.match(new RegExp(`organisation: '${organisation}'`, 'g')) || []).length !== 14) {
+      errors.push(`${templateId} does not preserve organisation on every section`);
+    }
+    ['Month 1 Content Calendar', 'Month 2 Content Calendar', 'Month 3 Content Calendar'].forEach(title => {
+      const sectionStart = block.indexOf(`title: '${title}'`);
+      const nextSectionStart = sectionStart === -1 ? -1 : block.indexOf('\n      {', sectionStart + 1);
+      const sectionBlock = sectionStart === -1 ? '' : block.slice(sectionStart, nextSectionStart === -1 ? undefined : nextSectionStart);
+      if (!sectionBlock.includes('calendarRows: [')) errors.push(`${templateId} ${title} is missing calendar rows`);
+      ['date:', 'pillar:', 'topic:', 'format:', 'strategicPurpose:', 'primaryAudience:', 'cta:'].forEach(field => {
+        if (!sectionBlock.includes(field)) errors.push(`${templateId} ${title} calendar rows are missing ${field}`);
+      });
+    });
+    requiredCopy.forEach(copy => {
+      if (!block.includes(copy)) errors.push(`${templateId} is missing required approval/detail copy: ${copy}`);
+    });
+  });
+
+  if (!fs.existsSync(socialMigrationPath)) {
+    errors.push("Missing supabase/social_media_strategy_reviews_v1.sql");
+  } else {
+    const socialSql = fs.readFileSync(socialMigrationPath, 'utf8');
+    const socialCode = socialSql.split('\n').filter(line => !line.trim().startsWith('--')).join('\n');
+    [filamentSocialTemplateId, chasmSocialTemplateId].forEach(id => {
+      if (!socialCode.includes(id)) errors.push(`Social Media Strategy migration does not seed ${id}`);
+      const gateCount = (socialCode.match(new RegExp(`WHEN '${id}' THEN 14`, 'g')) || []).length;
+      if (gateCount !== 2) errors.push(`Social Media Strategy migration defines the 14 gate for ${id} ${gateCount} times, expected 2`);
+    });
+    [
+      "WHEN 'template-filament-profile-review' THEN 16",
+      "WHEN 'template-filament-slides-review' THEN 43",
+      "WHEN 'template-filament-slides-review-v2' THEN 61",
+      "WHEN 'template-filament-website-review-v1' THEN 32",
+      "WHEN 'template-chasm-bridge-website-review-v1' THEN 31",
+    ].forEach(mapping => {
+      if (!socialCode.includes(mapping)) errors.push(`Social Media Strategy migration does not preserve expected-count mapping: ${mapping}`);
+    });
+    if (/CREATE TABLE|DROP TABLE|TRUNCATE|DELETE FROM/i.test(socialCode)) {
+      errors.push("Social Media Strategy migration contains a destructive table operation");
+    }
+  }
+
+  const lensV22 = fs.readFileSync(path.join(__dirname, '../src/views/FilamentReviews.jsx'), 'utf8');
+  [filamentSocialTemplateId, chasmSocialTemplateId, '3-Month Social Media Strategy', "actionTitle: 'Strategy Review'"].forEach(copy => {
+    if (!lensV22.includes(copy)) errors.push(`Reviews lens is missing social strategy programme copy: ${copy}`);
+  });
+  const socialGuidedForm = fs.readFileSync(path.join(__dirname, '../src/components/GuidedReviewForm.jsx'), 'utf8');
+  [
+    '3-MONTH SOCIAL MEDIA STRATEGY REVIEW',
+    'Approve This Section',
+    'Discuss in Meeting',
+    'DISCUSS IN MEETING:',
+    'What should be changed?',
+    'What should we discuss?',
+    'Current Strategy Summary',
+    'Key Decisions',
+    'Review Questions',
+    'Submit Strategy Feedback to Embark',
+  ].forEach(copy => {
+    if (!socialGuidedForm.includes(copy) && !guidedCfgV20.includes(copy)) {
+      errors.push(`Social strategy review form is missing copy/contract: ${copy}`);
+    }
+  });
+
+  const publicDir = path.join(__dirname, '../public');
+  const publicFiles = [];
+  const collectFiles = (dir) => {
+    if (!fs.existsSync(dir)) return;
+    fs.readdirSync(dir, { withFileTypes: true }).forEach(entry => {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) collectFiles(full);
+      else publicFiles.push(full);
+    });
+  };
+  collectFiles(publicDir);
+  const publicDocx = publicFiles.filter(file => /\.docx$/i.test(file));
+  if (publicDocx.length > 0) {
+    errors.push(`Source strategy documents must not be public assets: ${publicDocx.map(file => path.relative(path.join(__dirname, '..'), file)).join(', ')}`);
+  }
+  const srcBundle = [
+    guidedCfgV20,
+    socialGuidedForm,
+    lensV22,
+    fs.readFileSync(path.join(__dirname, '../src/data/programmeContext.js'), 'utf8'),
+    fs.readFileSync(path.join(__dirname, '../src/views/ClientInputRequirements.jsx'), 'utf8'),
+  ].join('\n');
+  [
+    'Filament_Social_Media_Growth_Awareness_Strategy_Jul-Oct_2026.docx',
+    'Chasm_Bridge_Charity_Social_Media_Growth_Awareness_Strategy_Jul-Oct_2026.docx',
+  ].forEach(fileName => {
+    if (publicFiles.some(file => path.basename(file) === fileName)) {
+      errors.push(`${fileName} has been copied into public assets`);
+    }
+    if (srcBundle.includes(fileName)) {
+      errors.push(`${fileName} is referenced from bundled source code`);
+    }
+  });
+
+  const socialRenderedSources = [lensV22, socialGuidedForm]
+    .join('\n')
+    .split('\n')
+    .filter(line => !line.trim().startsWith('//'))
+    .join('\n');
+  if (/Supabase|migration|SQL Editor/.test(socialRenderedSources)) {
+    errors.push("Social strategy rendered surfaces may expose implementation language to clients");
+  }
+
   if (errors.length > 0) {
     console.error("❌ Validation Failed. Errors:");
     errors.forEach(e => console.error(`  - ${e}`));
