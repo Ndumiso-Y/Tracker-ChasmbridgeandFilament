@@ -350,6 +350,95 @@ export const collaborationService = {
     return data || [];
   },
 
+  // Multi-reviewer guided reviews (multi_reviewer_guided_reviews_v1.sql).
+  // One reviewer pass = one request; sibling passes share review_group_id.
+  async createInternalReviewRound(payload) {
+    const { data, error } = await supabase
+      .rpc('create_internal_review_round', {
+        p_author_id: payload.authorId,
+        p_template_id: payload.templateId,
+        p_entity: payload.entity,
+        p_title_base: payload.titleBase,
+        p_reviewer_author_ids: payload.reviewerAuthorIds,
+      });
+    if (error) throw error;
+    return data || [];
+  },
+
+  async addInternalReviewerPass(payload) {
+    const { data, error } = await supabase
+      .rpc('add_internal_reviewer_pass', {
+        p_author_id: payload.authorId,
+        p_review_group_id: payload.reviewGroupId,
+        p_reviewer_author_id: payload.reviewerAuthorId,
+      });
+    if (error) throw error;
+    return Array.isArray(data) ? data[0] : data;
+  },
+
+  // Version-guarded section save: expectedUpdatedAt is the updated_at value
+  // loaded with the entry (null on first save). A stale value is rejected
+  // server-side — never merged, never silently overwritten.
+  async saveInternalReviewEntryVersioned(payload) {
+    const { data, error } = await supabase
+      .rpc('save_internal_client_input_review_entry', {
+        p_author_id: payload.authorId,
+        p_request_id: payload.requestId,
+        p_review_item_key: payload.reviewItemKey,
+        p_review_item_type: payload.reviewItemType,
+        p_review_item_number: payload.reviewItemNumber,
+        p_review_item_title: payload.reviewItemTitle,
+        p_review_group: payload.reviewGroup || null,
+        p_review_status: payload.reviewStatus,
+        p_current_concern: payload.currentConcern || null,
+        p_remove_this: payload.removeThis || null,
+        p_replacement_copy: payload.replacementCopy || null,
+        p_copy_treatment: payload.copyTreatment || null,
+        p_visual_direction: payload.visualDirection || null,
+        p_structure_changes: payload.structureChanges || null,
+        p_additional_comments: payload.additionalComments || null,
+        p_expected_updated_at: payload.expectedUpdatedAt ?? null,
+      });
+    if (error) throw error;
+    return Array.isArray(data) ? data[0] : data;
+  },
+
+  // Independence-first peer visibility: server returns nothing until the
+  // caller's own pass has saved this item; names + timestamps only, no ids.
+  async getInternalPeerReviewFeedback(authorId, requestId, reviewItemKey) {
+    const { data, error } = await supabase
+      .rpc('get_internal_peer_review_feedback', {
+        p_author_id: authorId,
+        p_request_id: requestId,
+        p_review_item_key: reviewItemKey,
+      });
+    if (error) throw error;
+    return data || [];
+  },
+
+  async saveInternalReviewConsolidation(payload) {
+    const { data, error } = await supabase
+      .rpc('save_internal_review_consolidation', {
+        p_author_id: payload.authorId,
+        p_review_group_id: payload.reviewGroupId,
+        p_final_instruction: payload.finalInstruction,
+        p_driving_request_id: payload.drivingRequestId || null,
+      });
+    if (error) throw error;
+    return Array.isArray(data) ? data[0] : data;
+  },
+
+  async getInternalReviewConsolidation(authorId, reviewGroupId) {
+    const { data, error } = await supabase
+      .rpc('get_internal_review_consolidation', {
+        p_author_id: authorId,
+        p_review_group_id: reviewGroupId,
+      });
+    if (error) throw error;
+    const rows = data || [];
+    return rows.length > 0 ? rows[0] : null;
+  },
+
   async upsertInternalReviewEntry(payload) {
     const { data, error } = await supabase
       .rpc('upsert_internal_client_input_review_entry', {

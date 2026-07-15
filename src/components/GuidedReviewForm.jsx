@@ -1,7 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { ChevronLeft, ChevronRight, CheckCircle, Send, AlertCircle, ExternalLink } from 'lucide-react';
 import { collaborationService } from '../services/collaborationService';
 import { cx } from '../utils/cx';
+import { DISCUSS_MARKER, isDiscussEntry as isDiscussEntryShared } from '../utils/reviewConflicts';
+import CopyLinkButton from './CopyLinkButton';
+import { buildReviewItemUrl, organisationSlugForRequest, programmeSlugForRequest } from '../utils/trackerRoutes';
 
 // Guided all-pages / all-slides review (V4A.10). One client_input_request,
 // many client_input_review_entries — every "N/A — No Changes Required" and
@@ -27,8 +30,6 @@ const STATUS_DOT = {
   'Changes Added': 'bg-gold text-navy border-gold',
   'No Changes Required': 'bg-emerald-100 text-emerald-700 border-emerald-300',
 };
-
-const DISCUSS_MARKER = 'DISCUSS IN MEETING:';
 
 const WEBSITE_FIELD_LABELS = {
   current_concern: 'Corrected Wording',
@@ -81,7 +82,7 @@ const WEBSITE_EMPHASIS_FIELDS = {
   ],
 };
 
-export default function GuidedReviewForm({ request, config, isInternal, selectedAuthorId, onSubmitted }) {
+export default function GuidedReviewForm({ request, config, isInternal, selectedAuthorId, onSubmitted, authors = [], initialItemKey = null }) {
   const items = config.items;
   const isWebsiteReview = config.reviewKind === 'website';
   const isStrategyReview = config.reviewKind === 'social-strategy';
@@ -92,12 +93,29 @@ export default function GuidedReviewForm({ request, config, isInternal, selected
   const [showSummary, setShowSummary] = useState(false);
   const [fields, setFields] = useState(EMPTY_FIELDS);
   const [changesChoice, setChangesChoice] = useState(null); // 'yes' | 'na' | 'discuss' | null
-  const [saveState, setSaveState] = useState(null); // 'saving' | 'saved' | 'failed'
+  const [saveState, setSaveState] = useState(null); // 'saving' | 'saved' | 'failed' | 'stale'
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState(null);
+  // Read-only peer feedback for the current item (multi-reviewer rounds).
+  // Server-gated: nothing is returned until this pass has saved its own
+  // response for the item (independence-first).
+  const isMultiReviewerPass = isInternal && !!request.review_group_id;
+  const [peerFeedback, setPeerFeedback] = useState(null);
+  const [peerLoading, setPeerLoading] = useState(false);
+  const [explicitItemError, setExplicitItemError] = useState(null);
+  const itemHeadingRef = useRef(null);
 
   const isSubmittedState = !EDITABLE_STATUSES.includes(request.status);
   const canEdit = !isSubmittedState && (!isInternal || !!selectedAuthorId);
+  const programmeLabel = config.reviewItemType === 'Presentation Slide'
+    ? 'Presentation'
+    : config.reviewKind === 'website'
+      ? 'Website'
+      : config.reviewKind === 'social-strategy'
+        ? 'Social Media Strategy'
+        : config.reviewItemType === 'Company Profile Page'
+          ? 'Company Profile'
+          : 'Review';
 
   useEffect(() => {
     let mounted = true;
@@ -112,13 +130,25 @@ export default function GuidedReviewForm({ request, config, isInternal, selected
         const map = {};
         (rows || []).forEach(r => { map[r.review_item_key] = r; });
         setEntries(map);
-        // Resume at the first item not yet reviewed; all-done goes straight
-        // to the summary.
-        const firstPending = items.findIndex(it => !map[it.key] || map[it.key].review_status === 'Not Reviewed');
-        if (firstPending === -1) {
-          setShowSummary(true);
+        const explicitIndex = initialItemKey ? items.findIndex(it => it.key === initialItemKey) : -1;
+        if (initialItemKey && explicitIndex === -1) {
+          setExplicitItemError('This review section could not be found.');
         } else {
-          setIndex(firstPending);
+          setExplicitItemError(null);
+        }
+        if (explicitIndex >= 0) {
+          setShowSummary(false);
+          setIndex(explicitIndex);
+        } else {
+          // Resume at the first item not yet reviewed; all-done goes straight
+          // to the summary.
+          const firstPending = items.findIndex(it => !map[it.key] || map[it.key].review_status === 'Not Reviewed');
+          if (firstPending === -1) {
+            setShowSummary(true);
+          } else {
+            setShowSummary(false);
+            setIndex(firstPending);
+          }
         }
       } catch (err) {
         console.error(err);
@@ -129,9 +159,17 @@ export default function GuidedReviewForm({ request, config, isInternal, selected
     })();
     return () => { mounted = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [request.id]);
+  }, [request.id, initialItemKey]);
 
   const currentItem = items[index];
+
+  useEffect(() => {
+    if (!currentItem || loading) return;
+    document.title = `${request.entity || 'Review'} ${programmeLabel} Review - ${config.itemNoun} ${currentItem.number}`;
+    if (initialItemKey && currentItem.key === initialItemKey) {
+      itemHeadingRef.current?.focus();
+    }
+  }, [currentItem, loading, request.entity, programmeLabel, config.itemNoun, initialItemKey]);
 
   // Rehydrate the form whenever the reviewer lands on an item.
   useEffect(() => {
@@ -158,6 +196,13 @@ export default function GuidedReviewForm({ request, config, isInternal, selected
       setChangesChoice(null);
     }
     setSaveState(null);
+    // Peer feedback belongs to the item being viewed; refetch when this pass
+    // already has a saved response for it (server enforces the same gate).
+    setPeerFeedback(null);
+    if (currentItem && isMultiReviewerPass) {
+      const saved = entries[currentItem.key];
+      if (saved && saved.review_status !== 'Not Reviewed') refreshPeerFeedback(currentItem.key);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [index, loading]);
 
@@ -191,7 +236,10 @@ export default function GuidedReviewForm({ request, config, isInternal, selected
     try {
       let row;
       if (isInternal) {
-        row = await collaborationService.upsertInternalReviewEntry({
+        // Version-guarded save: the server rejects the write if this section
+        // changed after it was loaded (stale tab / another save). A rejected
+        // stale save never merges and never advances.
+        row = await collaborationService.saveInternalReviewEntryVersioned({
           authorId: selectedAuthorId,
           requestId: request.id,
           reviewItemKey: item.key,
@@ -207,6 +255,7 @@ export default function GuidedReviewForm({ request, config, isInternal, selected
           visualDirection: preparedFields.visual_direction,
           structureChanges: preparedFields.structure_changes,
           additionalComments: preparedFields.additional_comments,
+          expectedUpdatedAt: entries[item.key]?.updated_at ?? null,
         });
       } else {
         row = await collaborationService.upsertReviewEntry({
@@ -228,11 +277,52 @@ export default function GuidedReviewForm({ request, config, isInternal, selected
       }
       setEntries(prev => ({ ...prev, [item.key]: row }));
       setSaveState('saved');
+      if (isMultiReviewerPass) refreshPeerFeedback(item.key);
       return true;
     } catch (err) {
       console.error(err);
-      setSaveState('failed');
+      // Distinguish a stale save (someone/some tab saved this section after
+      // it was loaded here) from an ordinary failure — different recovery.
+      setSaveState(/changed after you opened it/i.test(err?.message || '') ? 'stale' : 'failed');
       return false;
+    }
+  };
+
+  // Reload the latest saved version of the CURRENT section from the server
+  // (stale-save recovery). Replaces the local snapshot and rehydrates the
+  // form with the latest content.
+  const reloadCurrentEntry = async () => {
+    try {
+      const rows = isInternal
+        ? await collaborationService.getInternalReviewEntries(selectedAuthorId, request.id)
+        : await collaborationService.getReviewEntries(request.id);
+      const map = {};
+      (rows || []).forEach(r => { map[r.review_item_key] = r; });
+      setEntries(map);
+      const entry = map[currentItem?.key];
+      setFields(entry ? fieldsOfEntry(entry) : EMPTY_FIELDS);
+      setChangesChoice(!entry || entry.review_status === 'Not Reviewed' ? null
+        : entry.review_status === 'No Changes Required' ? 'na'
+          : isDiscussEntryShared(entry) ? 'discuss' : 'yes');
+      setSaveState(null);
+    } catch (err) {
+      console.error(err);
+      setSaveState('failed');
+    }
+  };
+
+  // Read-only peer feedback for one item (multi-reviewer rounds only).
+  const refreshPeerFeedback = async (itemKey) => {
+    if (!isMultiReviewerPass || !selectedAuthorId) return;
+    setPeerLoading(true);
+    try {
+      const rows = await collaborationService.getInternalPeerReviewFeedback(selectedAuthorId, request.id, itemKey);
+      setPeerFeedback({ itemKey, rows: rows || [] });
+    } catch (err) {
+      console.error(err);
+      setPeerFeedback({ itemKey, rows: [], failed: true });
+    } finally {
+      setPeerLoading(false);
     }
   };
 
@@ -363,7 +453,9 @@ export default function GuidedReviewForm({ request, config, isInternal, selected
       {navigatorGroups.map((g, gi) => {
         const reviewedInGroup = g.entries.filter(({ item }) => (entries[item.key]?.review_status || 'Not Reviewed') !== 'Not Reviewed').length;
         return (
-          <div key={g.label || gi}>
+          // Keyed by position, not label: group labels may legitimately repeat
+          // non-contiguously (e.g. the Chasm website's two "Home" runs).
+          <div key={`${g.label || 'group'}-${gi}`}>
             {g.label && (
               <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
                 {g.label.replace(/^Section \d+ — /, '')} <span className="text-slate-300">· {reviewedInGroup}/{g.entries.length}</span>
@@ -401,6 +493,11 @@ export default function GuidedReviewForm({ request, config, isInternal, selected
         {!isSubmittedState && navigator}
         <div className="p-6">
           <h3 className="text-lg font-bold text-navy mb-1">Review Summary</h3>
+          {request.reviewer_display_name && (
+            <p className="mb-2 text-xs font-bold text-slate-500">
+              {request.reviewer_display_name}'s review — other reviewers submit independently and are never blocked by this one.
+            </p>
+          )}
           {isSubmittedState && (
             <p className="mb-3 flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-bold text-emerald-700">
               <CheckCircle className="w-4 h-4" /> Submitted to Embark successfully{request.submitted_at ? ` on ${new Date(request.submitted_at).toLocaleDateString('en-ZA')}` : ''} — everything requested is recorded below.
@@ -478,24 +575,52 @@ export default function GuidedReviewForm({ request, config, isInternal, selected
   }
 
   const entryStatus = entries[currentItem.key]?.review_status || 'Not Reviewed';
+  const itemUrl = () => buildReviewItemUrl(
+    organisationSlugForRequest(request),
+    programmeSlugForRequest(request),
+    request.id,
+    currentItem.key,
+  );
 
   return (
     <div>
       {navigator}
       <div className="p-6">
+        {explicitItemError && (
+          <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm font-bold text-amber-800" role="alert">
+            {explicitItemError}
+          </div>
+        )}
         <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
           <p className="text-xs font-black uppercase tracking-[0.14em] text-gold">
             {isStrategyReview ? '3-MONTH SOCIAL MEDIA STRATEGY REVIEW' : `${config.itemNoun} ${currentItem.number} of ${items.length}`}
           </p>
           <span className={cx("text-[10px] font-bold px-2 py-0.5 rounded-full border", STATUS_DOT[entryStatus])}>{entryStatus}</span>
         </div>
+        {request.reviewer_display_name && (
+          <p className="mb-1 text-xs font-bold text-slate-500">Your Review — {request.reviewer_display_name}</p>
+        )}
         {isStrategyReview && (
           <p className="mb-1 text-xs font-black uppercase tracking-wide text-slate-400">
             {config.itemNoun} {currentItem.number} of {items.length}
           </p>
         )}
         {currentItem.group && <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">{currentItem.group.replace(/^Section \d+ — /, '')}</p>}
-        <h3 className="text-xl font-bold text-navy mb-4">{currentItem.title}</h3>
+        <nav className="mb-3 flex flex-wrap items-center gap-1.5 text-xs font-bold text-slate-500" aria-label="Review location">
+          <span>Reviews</span>
+          <span aria-hidden="true">/</span>
+          <span>{request.entity || 'Organisation'}</span>
+          <span aria-hidden="true">/</span>
+          <span>{programmeLabel}</span>
+          <span aria-hidden="true">/</span>
+          <span>Review</span>
+          <span aria-hidden="true">/</span>
+          <span className="text-navy">{config.itemNoun} {currentItem.number}</span>
+        </nav>
+        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+          <h3 ref={itemHeadingRef} tabIndex={-1} className="text-xl font-bold text-navy outline-none focus-visible:ring-2 focus-visible:ring-gold/40">{currentItem.title}</h3>
+          <CopyLinkButton getUrl={itemUrl} label="Copy This Section Link" />
+        </div>
 
         {isWebsiteReview && (
           <div className="mb-5 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
@@ -730,6 +855,81 @@ export default function GuidedReviewForm({ request, config, isInternal, selected
           <p className="mb-3 flex items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700">
             <AlertCircle className="w-3.5 h-3.5" /> Save failed — your typing is still on screen and was NOT stored. Please try again.
           </p>
+        )}
+        {saveState === 'stale' && (
+          <div className="mb-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2.5 text-xs text-amber-800" role="alert">
+            <p className="flex items-center gap-1.5 font-bold">
+              <AlertCircle className="w-3.5 h-3.5 shrink-0" /> This section changed after you opened it. Reload the latest version before saving.
+            </p>
+            <p className="mt-1">Your typing is still on screen and was NOT stored. Reloading shows the latest saved version — copy your wording first if you want to keep it.</p>
+            <button
+              type="button"
+              onClick={reloadCurrentEntry}
+              className="mt-2 rounded-lg border border-amber-400 bg-white px-3 py-1.5 text-xs font-bold text-amber-800 hover:bg-amber-100"
+            >
+              Reload Latest Version
+            </button>
+          </div>
+        )}
+        {entries[currentItem.key] && entries[currentItem.key].review_status !== 'Not Reviewed' && (
+          <p className="mb-3 text-[11px] text-slate-400">
+            Saved {new Date(entries[currentItem.key].updated_at).toLocaleString('en-ZA', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+            {(() => {
+              const a = authors.find(x => x.id === entries[currentItem.key].recorded_by_author_id);
+              return a ? ` by ${a.display_name}` : '';
+            })()}
+          </p>
+        )}
+
+        {/* Read-only peer feedback (multi-reviewer rounds). Independence-first:
+            the server returns nothing until this pass has saved its own
+            response for this item — the gate below mirrors that honestly. */}
+        {isMultiReviewerPass && !showSummary && (
+          <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
+            <p className="text-xs font-black uppercase tracking-wider text-slate-500 mb-2">Other Reviewer Feedback</p>
+            {(!entries[currentItem.key] || entries[currentItem.key].review_status === 'Not Reviewed') ? (
+              <p className="text-sm text-slate-500">Complete your response first to view other reviewer feedback.</p>
+            ) : peerLoading ? (
+              <p className="text-sm text-slate-400">Loading other reviewer feedback…</p>
+            ) : peerFeedback?.failed ? (
+              <p className="text-sm text-red-600">Other reviewer feedback could not be loaded. Please try again.</p>
+            ) : (peerFeedback?.rows || []).length === 0 ? (
+              <p className="text-sm text-slate-500">No other reviewer has saved this {config.itemNoun.toLowerCase()} yet.</p>
+            ) : (
+              <div className="space-y-3">
+                {peerFeedback.rows.map((p, i) => {
+                  const discuss = p.review_status === 'Changes Added' && (p.additional_comments || '').startsWith(DISCUSS_MARKER);
+                  const decisionLabel = p.review_status === 'No Changes Required' ? 'Approved'
+                    : discuss ? 'Discuss in Meeting' : 'Changes Required';
+                  return (
+                    <div key={`${p.reviewer_display_name}-${i}`} className="rounded-lg border border-slate-200 bg-white p-3" aria-readonly="true">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-sm font-bold text-navy">{p.reviewer_display_name}</p>
+                        <span className={cx('rounded-full border px-2 py-0.5 text-[10px] font-bold',
+                          p.review_status === 'No Changes Required' ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                            : discuss ? 'bg-slate-800 text-white border-slate-800' : 'bg-gold/10 text-[#795000] border-gold/40')}>
+                          {decisionLabel}
+                        </span>
+                      </div>
+                      <div className="mt-1.5 space-y-1 text-sm text-slate-700">
+                        {p.current_concern && <p>{p.current_concern}</p>}
+                        {p.remove_this && <p><span className="font-bold text-slate-500">Remove:</span> {p.remove_this}</p>}
+                        {p.replacement_copy && <p><span className="font-bold text-slate-500">Replace with:</span> {p.replacement_copy}</p>}
+                        {p.copy_treatment && <p><span className="font-bold text-slate-500">Copy treatment:</span> {p.copy_treatment}</p>}
+                        {p.visual_direction && <p><span className="font-bold text-slate-500">Visual:</span> {p.visual_direction}</p>}
+                        {p.structure_changes && <p><span className="font-bold text-slate-500">Structure:</span> {p.structure_changes}</p>}
+                        {p.additional_comments && <p>{discuss ? p.additional_comments.replace(DISCUSS_MARKER, '').trim() : p.additional_comments}</p>}
+                      </div>
+                      <p className="mt-1.5 text-[11px] text-slate-400">
+                        Saved {new Date(p.saved_at).toLocaleString('en-ZA', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                        {p.reviewer_submitted ? ' · review submitted' : ''}
+                      </p>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         )}
 
         <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-100">

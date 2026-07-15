@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { Target, AlertTriangle, CheckCircle2, MoreHorizontal, Clock, ArrowRight } from "lucide-react";
 import { SectionHeader } from "../components/SectionHeader";
 import { Badge, StatusBadge, priorityStyles, statusStyles, StatusLegend } from "../components/Badge";
@@ -6,6 +6,8 @@ import { EmptyState } from "../components/EmptyState";
 import { cx } from "../utils/cx";
 import { TaskNotesModal, EditableText } from "./TaskCommandCenter";
 import { statuses, priorities } from "../data/trackerData";
+import CopyLinkButton from "../components/CopyLinkButton";
+import { buildDeliveryItemPath, buildDeliveryItemUrl } from "../utils/trackerRoutes";
 
 const lanes = [
   { id: "Now", title: "Now / Active", icon: Target, color: "text-blue-600", bg: "bg-blue-50 border-blue-200" },
@@ -23,9 +25,12 @@ export default function DeliveryBoard({
   onUpdateTask = null,
   selectedAuthorId = "",
   authors = [],
-  onSelectAuthor = null
+  onSelectAuthor = null,
+  targetRecordId = null,
+  onRecordTargetConsumed = null
 }) {
   const [activeNotesTaskId, setActiveNotesTaskId] = useState(null);
+  const [targetError, setTargetError] = useState(null);
 
   // Scope to Phase 2 and Phase 3 only
   const deliveryTasks = useMemo(() => {
@@ -33,6 +38,24 @@ export default function DeliveryBoard({
   }, [tasks]);
 
   const isAdmin = userRole === "admin";
+  const activeTask = tasks.find(t => t.id === activeNotesTaskId);
+
+  useEffect(() => {
+    if (activeTask) {
+      document.title = `Delivery - ${activeTask.task || 'Item'}`;
+    }
+  }, [activeTask]);
+
+  useEffect(() => {
+    if (!targetRecordId) return;
+    if (tasks.some(t => t.id === targetRecordId)) {
+      setTargetError(null);
+      setActiveNotesTaskId(targetRecordId);
+    } else {
+      setTargetError('This item could not be found.');
+    }
+    if (onRecordTargetConsumed) onRecordTargetConsumed();
+  }, [targetRecordId, tasks, onRecordTargetConsumed]);
 
   const handleLaneChange = async (task, newLane) => {
     if (newLane === task.deliveryLane) return;
@@ -56,6 +79,12 @@ export default function DeliveryBoard({
       />
 
       <StatusLegend className="mt-4" />
+
+      {targetError && (
+        <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm font-bold text-amber-800" role="alert">
+          {targetError}
+        </div>
+      )}
 
       <div className="mt-6 flex gap-4 overflow-x-auto pb-4 custom-scrollbar h-[calc(100vh-220px)] items-start">
         {lanes.map(lane => {
@@ -84,7 +113,10 @@ export default function DeliveryBoard({
                       isAdmin={isAdmin}
                       onUpdateTask={onUpdateTask}
                       onLaneChange={(newLane) => handleLaneChange(task, newLane)}
-                      onOpenNotes={() => setActiveNotesTaskId(task.id)}
+                      onOpenNotes={() => {
+                        window.location.hash = buildDeliveryItemPath(task.id);
+                        setActiveNotesTaskId(task.id);
+                      }}
                       notesCount={notes.filter(n => n.tracker_item_id === task.id).length}
                     />
                   ))
@@ -96,7 +128,6 @@ export default function DeliveryBoard({
       </div>
 
       {activeNotesTaskId && (() => {
-        const activeTask = tasks.find(t => t.id === activeNotesTaskId);
         if (!activeTask) return null;
         return (
           <TaskNotesModal
@@ -112,7 +143,10 @@ export default function DeliveryBoard({
             selectedAuthorId={selectedAuthorId}
             authors={authors}
             onSelectAuthor={onSelectAuthor}
-            onClose={() => setActiveNotesTaskId(null)}
+            onClose={() => {
+              setActiveNotesTaskId(null);
+              window.location.hash = '/delivery-board';
+            }}
           />
         );
       })()}
@@ -229,6 +263,11 @@ function DeliveryCard({ task, isAdmin, onUpdateTask, onLaneChange, onOpenNotes, 
       </div>
 
       <div className="mt-2 pt-2 border-t border-slate-100 flex items-center justify-end text-[10px]">
+        <CopyLinkButton
+          getUrl={() => buildDeliveryItemUrl(task.id)}
+          label="Copy Delivery Link"
+          className="mr-2 px-2 py-1 text-[10px]"
+        />
         <button
           onClick={onOpenNotes}
           className={cx(

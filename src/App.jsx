@@ -1,4 +1,5 @@
 import { useMemo, useState, useEffect } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import {
   LayoutDashboard,
   FolderKanban,
@@ -28,6 +29,7 @@ import {
 import { validateWrite } from "./utils/validation";
 import { collaborationService } from "./services/collaborationService";
 import { SECURE_SIGN_IN_ENABLED } from "./data/programmeContext";
+import { parseTrackerRoute, routeForView } from "./utils/trackerRoutes";
 
 // Import Views
 import Dashboard from "./views/Dashboard";
@@ -145,7 +147,10 @@ function mapRecordByCategoryId(r) {
 }
 
 function App() {
+  const location = useLocation();
+  const navigate = useNavigate();
   const [activeView, setActiveView] = useState("dashboard");
+  const [routeNotice, setRouteNotice] = useState(null);
 
   // Direct record navigation (V4A.14): an attention item opens the EXACT
   // record, not just the owning module. The target holds only { view,
@@ -153,13 +158,57 @@ function App() {
   // register through its canonical persona-correct read path, finds the id,
   // selects it, and then reports consumption so the target is cleared.
   const [pendingRecordTarget, setPendingRecordTarget] = useState(null);
-  const openWorkspaceRecord = ({ view, recordId }) => {
-    setPendingRecordTarget({ view, recordId });
-    setActiveView(view);
+  const navigateToView = (view) => {
+    navigate(routeForView(view));
+  };
+
+  const openWorkspaceRecord = ({ view, recordId, itemKey = null, routePath = null }) => {
+    setPendingRecordTarget({ view, recordId, itemKey });
+    if (routePath) navigate(routePath);
+    else navigateToView(view);
   };
   const consumeRecordTarget = () => setPendingRecordTarget(null);
   const targetRecordIdFor = (view) =>
     pendingRecordTarget && pendingRecordTarget.view === view ? pendingRecordTarget.recordId : null;
+  const targetItemKeyFor = (view) =>
+    pendingRecordTarget && pendingRecordTarget.view === view ? pendingRecordTarget.itemKey : null;
+
+  useEffect(() => {
+    const parsed = parseTrackerRoute(location.pathname);
+    if (parsed.type === "invalid") {
+      setRouteNotice(parsed.message || "This section could not be found.");
+      setActiveView(parsed.view || "dashboard");
+      setPendingRecordTarget(null);
+      document.title = "Tracker - Section Not Found";
+      return;
+    }
+
+    setRouteNotice(null);
+    if (parsed.type === "record" && parsed.recordId) {
+      setActiveView(parsed.view);
+      setPendingRecordTarget({ view: parsed.view, recordId: parsed.recordId, itemKey: null });
+    } else if (parsed.type === "reviews") {
+      setActiveView(parsed.recordId ? "client_input" : "filament_reviews");
+      setPendingRecordTarget(parsed.recordId
+        ? {
+            view: "client_input",
+            recordId: parsed.recordId,
+            itemKey: parsed.itemKey || null,
+            organisationSlug: parsed.organisationSlug || null,
+            programmeSlug: parsed.programmeSlug || null,
+          }
+        : {
+            view: "filament_reviews",
+            recordId: null,
+            itemKey: null,
+            organisationSlug: parsed.organisationSlug || null,
+            programmeSlug: parsed.programmeSlug || null,
+          });
+    } else if (parsed.type === "main") {
+      setActiveView(parsed.view);
+      setPendingRecordTarget(null);
+    }
+  }, [location.pathname]);
 
   const auth = useAuth() || {};
   const { session, profile, isAdmin, isClient, hasAccess, hasProfile, isProfileActive, isLoading } = auth;
@@ -268,6 +317,7 @@ function App() {
   useEffect(() => {
     if (!isLoading && isViewBlockedForClient) {
       setActiveView("client_home");
+      navigateToView("client_home");
     }
   }, [isLoading, isViewBlockedForClient]);
 
@@ -863,6 +913,15 @@ if (isDeliverable && updatedFields.clientInput !== undefined) {
 
 
   const ActiveIcon = navItems.find((item) => item.id === activeView)?.icon ?? LayoutDashboard;
+  const activeLabel = navItems.find((item) => item.id === activeView)?.label || "Command Center";
+
+  useEffect(() => {
+    if (!routeNotice) {
+      document.title = activeView === "dashboard"
+        ? "Tracker Command Center"
+        : `${activeLabel} - Tracker`;
+    }
+  }, [activeView, activeLabel, routeNotice]);
 
   // Hold the shell until auth state resolves, so an authenticated user never
   // briefly sees the wrong role's navigation/landing view before redirect.
@@ -894,7 +953,7 @@ if (isDeliverable && updatedFields.clientInput !== undefined) {
           </button>
           <div className="flex items-center gap-2 text-sm font-black">
             <ActiveIcon size={18} className="text-gold" />
-            {navItems.find((item) => item.id === activeView)?.label}
+            {activeLabel}
           </div>
         </div>
       </div>
@@ -929,7 +988,7 @@ if (isDeliverable && updatedFields.clientInput !== undefined) {
                     <button
                       key={item.id}
                       onClick={() => {
-                        setActiveView(item.id);
+                        navigateToView(item.id);
                         setMobileOpen(false);
                       }}
                       aria-current={active ? "page" : undefined}
@@ -939,7 +998,7 @@ if (isDeliverable && updatedFields.clientInput !== undefined) {
                       )}
                     >
                       <Icon size={18} />
-                      {item.label}
+                      <span className="truncate">{item.label}</span>
                     </button>
                   );
                 })}
@@ -1016,6 +1075,11 @@ if (isDeliverable && updatedFields.clientInput !== undefined) {
               <p className="text-slate-500">Your profile is currently inactive. Please contact the administrator.</p>
             </div>
           )}
+          {routeNotice && (
+            <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm font-bold text-amber-800" role="alert">
+              {routeNotice}
+            </div>
+          )}
           
           {(() => {
             // Guard against rendering an admin-only view for a client contributor.
@@ -1047,7 +1111,7 @@ if (isDeliverable && updatedFields.clientInput !== undefined) {
               onUpdateLaunchItem={handleInlineUpdate}
               hasProfile={!!profile}
               selectedAuthorId={selectedAuthorId}
-              onNavigate={setActiveView}
+              onNavigate={navigateToView}
               onOpenRecord={openWorkspaceRecord}
             />
           )}
@@ -1074,6 +1138,8 @@ if (isDeliverable && updatedFields.clientInput !== undefined) {
               selectedAuthorId={selectedAuthorId}
               authors={dbAuthors}
               onSelectAuthor={setSelectedAuthorId}
+              targetRecordId={targetRecordIdFor("delivery")}
+              onRecordTargetConsumed={consumeRecordTarget}
             />
           )}
           {activeView === "scope" && (
@@ -1119,9 +1185,9 @@ if (isDeliverable && updatedFields.clientInput !== undefined) {
           )}
           
           {activeView === "client_home" && <ClientAttentionHome onOpenRecord={openWorkspaceRecord} />}
-          {activeView === "filament_reviews" && <FilamentReviews selectedAuthorId={selectedAuthorId} onOpenRecord={openWorkspaceRecord} onNavigate={setActiveView} />}
+          {activeView === "filament_reviews" && <FilamentReviews selectedAuthorId={selectedAuthorId} onOpenRecord={openWorkspaceRecord} onNavigate={navigateToView} authors={dbAuthors} routeTarget={pendingRecordTarget?.view === "filament_reviews" ? pendingRecordTarget : null} />}
           {activeView === "client_access" && <ClientAccess />}
-          {activeView === "client_input" && <ClientInputRequirements selectedAuthorId={selectedAuthorId} updateAuthors={dbAuthors} onSelectAuthor={setSelectedAuthorId} targetRecordId={targetRecordIdFor("client_input")} onRecordTargetConsumed={consumeRecordTarget} />}
+          {activeView === "client_input" && <ClientInputRequirements selectedAuthorId={selectedAuthorId} updateAuthors={dbAuthors} onSelectAuthor={setSelectedAuthorId} targetRecordId={targetRecordIdFor("client_input")} targetItemKey={targetItemKeyFor("client_input")} routeTarget={pendingRecordTarget?.view === "client_input" ? pendingRecordTarget : null} onRecordTargetConsumed={consumeRecordTarget} />}
           {activeView === "weekly_review" && <WeeklyDeliveryReview selectedAuthorId={selectedAuthorId} authors={dbAuthors} targetRecordId={targetRecordIdFor("weekly_review")} onRecordTargetConsumed={consumeRecordTarget} />}
           {activeView === "support" && <SupportIssues selectedAuthorId={selectedAuthorId} authors={dbAuthors} onSelectAuthor={setSelectedAuthorId} targetRecordId={targetRecordIdFor("support")} onRecordTargetConsumed={consumeRecordTarget} />}
 {activeView === "graduates" && (

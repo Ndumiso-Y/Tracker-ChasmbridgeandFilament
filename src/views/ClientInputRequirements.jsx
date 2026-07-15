@@ -10,6 +10,15 @@ import { requestResponsibility, RESPONSIBILITY } from '../utils/responsibility';
 import { ResponsibilityBadge } from '../components/Badge';
 import { displayRequestStatus, REQUEST_ORIGIN_SHORT } from '../utils/statusLanguage';
 import { explainDbError } from '../utils/dbErrors';
+import CopyLinkButton from '../components/CopyLinkButton';
+import {
+  buildClientRequestPath,
+  buildClientRequestUrl,
+  buildExactReviewPath,
+  buildExactReviewUrl,
+  organisationSlugForRequest,
+  programmeSlugForRequest,
+} from '../utils/trackerRoutes';
 
 // Helper: returns a template-specific contextual label for the primary action
 // button when a guided review template is selected. Returns defaultLabel for
@@ -67,10 +76,13 @@ const TEMPLATE_DISPLAY_LABELS = {
   'template-chasm-bridge-social-media-strategy-review-v1': 'Chasm Bridge Charity 3-Month Social Media Strategy Review',
 };
 
-export default function ClientInputRequirements({ selectedAuthorId = "", updateAuthors = [], onSelectAuthor = null, targetRecordId = null, onRecordTargetConsumed = null }) {
+export default function ClientInputRequirements({ selectedAuthorId = "", updateAuthors = [], onSelectAuthor = null, targetRecordId = null, targetItemKey = null, routeTarget = null, onRecordTargetConsumed = null }) {
   const { profile, isAdmin, isClient } = useAuth();
   const [requests, setRequests] = useState([]);
   const [selectedRequest, setSelectedRequest] = useState(null);
+  const [deepLinkedItemKey, setDeepLinkedItemKey] = useState(null);
+  const [selectedRouteTarget, setSelectedRouteTarget] = useState(null);
+  const [targetError, setTargetError] = useState(null);
   const [responses, setResponses] = useState({}); // mapped by template_section_id
   const [sections, setSections] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -225,17 +237,34 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile, selectedAuthorId]);
 
+  useEffect(() => {
+    if (selectedRequest) {
+      document.title = `${selectedRequest.title || 'Request'} - Tracker`;
+    }
+  }, [selectedRequest]);
+
   // Direct record navigation (V4A.14): consume a targeted request id once
   // the persona-correct register has loaded — select the real loaded row
   // via the canonical handleSelectRequest (which resolves guided vs
   // structured detail), then clear the consumed target.
   useEffect(() => {
     if (!targetRecordId || loading) return;
+    if (needsAuthorSelection) return;
     const found = requests.find(r => r.id === targetRecordId);
-    if (found) handleSelectRequest(found);
-    if (onRecordTargetConsumed) onRecordTargetConsumed();
+    if (found) {
+      setTargetError(null);
+      setSelectedRouteTarget(routeTarget || null);
+      setDeepLinkedItemKey(targetItemKey || null);
+      handleSelectRequest(found, { preserveHash: true });
+      if (onRecordTargetConsumed) onRecordTargetConsumed();
+    } else if (requests.length > 0) {
+      setTargetError('This item could not be found.');
+      setSelectedRequest(null);
+      setDeepLinkedItemKey(null);
+      if (onRecordTargetConsumed) onRecordTargetConsumed();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [targetRecordId, loading, requests]);
+  }, [targetRecordId, targetItemKey, loading, needsAuthorSelection, requests]);
 
   // Internal RPC rows are flat (template_title, counts, labels); reshape
   // them to the same shape the rest of the view already renders.
@@ -300,7 +329,19 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
     }
   };
 
-  const handleSelectRequest = async (req) => {
+  const handleSelectRequest = async (req, options = {}) => {
+    if (!options.preserveHash) {
+      setDeepLinkedItemKey(null);
+      setSelectedRouteTarget(null);
+      setTargetError(null);
+      const orgSlug = organisationSlugForRequest(req);
+      const programmeSlug = programmeSlugForRequest(req);
+      if (orgSlug && programmeSlug) {
+        window.location.hash = buildExactReviewPath(orgSlug, programmeSlug, req.id);
+      } else {
+        window.location.hash = buildClientRequestPath(req.id);
+      }
+    }
     setSelectedRequest(req);
     setShowAssignPicker(false);
     setShowEditPanel(false);
@@ -857,6 +898,27 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
     return <div className="p-8 text-slate-500">Loading requests...</div>;
   }
 
+  if (targetError && !selectedRequest) {
+    return (
+      <div className="flex-1 overflow-y-auto p-4 md:p-8 max-w-5xl mx-auto">
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-6 text-amber-900" role="alert">
+          <h1 className="text-xl font-black text-navy">This item could not be found.</h1>
+          <p className="mt-2 text-sm">The request may have been removed, archived outside this register, or unavailable to the current user.</p>
+          <button
+            type="button"
+            onClick={() => {
+              setTargetError(null);
+              window.location.hash = '/requests';
+            }}
+            className="mt-4 rounded-lg bg-white px-4 py-2 text-sm font-bold text-navy shadow-sm hover:bg-slate-50"
+          >
+            Back to Requests
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   if (selectedRequest) {
     const isReadOnly = ['Ready for Embark Review', 'Requirements Confirmed', 'In Production', 'Approved', 'Delivered'].includes(selectedRequest.status) && !isAdmin;
 
@@ -893,6 +955,17 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
       || (createdByComment ? createdByComment[1] : null);
 
     const isGuidedReview = !!GUIDED_REVIEW_CONFIGS[selectedRequest.template_id];
+    const orgSlug = organisationSlugForRequest(selectedRequest);
+    const programmeSlug = programmeSlugForRequest(selectedRequest);
+    const effectiveRouteTarget = selectedRouteTarget || routeTarget;
+    const routeMismatch = effectiveRouteTarget?.recordId === selectedRequest.id
+      && ((effectiveRouteTarget.organisationSlug && effectiveRouteTarget.organisationSlug !== orgSlug)
+        || (effectiveRouteTarget.programmeSlug && effectiveRouteTarget.programmeSlug !== programmeSlug));
+    const reviewUrl = () => (
+      isGuidedReview && orgSlug && programmeSlug
+        ? buildExactReviewUrl(orgSlug, programmeSlug, selectedRequest.id)
+        : buildClientRequestUrl(selectedRequest.id)
+    );
 
     const assignedContributorLabel = selectedRequest.assigned_contributor_user_id
       ? (activeContributors.find(c => c.user_id === selectedRequest.assigned_contributor_user_id)?.display_name || 'Assigned (contributor not currently active)')
@@ -902,7 +975,11 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
     return (
       <div className="flex-1 overflow-y-auto p-4 md:p-8 max-w-5xl mx-auto">
         <button
-          onClick={() => setSelectedRequest(null)}
+          onClick={() => {
+            setSelectedRequest(null);
+            setDeepLinkedItemKey(null);
+            window.location.hash = '/requests';
+          }}
           className="text-navy hover:text-gold text-sm font-bold mb-6 flex items-center gap-2"
         >
           <ChevronRight className="w-4 h-4 rotate-180" /> Back to Requests
@@ -970,8 +1047,15 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
                   )}
                 </div>
               </div>
+              <CopyLinkButton getUrl={reviewUrl} label={isGuidedReview ? 'Copy Review Link' : 'Copy Request Link'} />
             </div>
           </div>
+
+          {routeMismatch && (
+            <div className="px-6 py-3 border-b border-amber-200 bg-amber-50 text-sm font-bold text-amber-800" role="alert">
+              This item could not be found under the requested organisation or programme.
+            </div>
+          )}
 
           {canOperateInternally && (
             <div className="px-6 py-4 border-b border-slate-200 bg-slate-50/40">
@@ -1153,7 +1237,23 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
             </div>
           )}
 
-          {canOperateInternally && detailComments.length > 0 && (
+          {routeMismatch ? (
+            <div className="p-6">
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900" role="alert">
+                <p className="font-bold">The review exists, but it does not belong to the organisation or programme in the link.</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const correctUrl = reviewUrl();
+                    window.location.href = correctUrl;
+                  }}
+                  className="mt-3 rounded-lg bg-white px-4 py-2 text-sm font-bold text-navy shadow-sm hover:bg-slate-50"
+                >
+                  Open Correct Review Link
+                </button>
+              </div>
+            </div>
+          ) : canOperateInternally && detailComments.length > 0 && (
             <div className="px-6 py-4 border-b border-slate-200 bg-slate-50/40">
               <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wide mb-2">Context & Provenance</h3>
               <div className="space-y-2">
@@ -1164,12 +1264,14 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
             </div>
           )}
 
-          {isGuidedReview ? (
+          {!routeMismatch && (isGuidedReview ? (
             <GuidedReviewForm
               request={selectedRequest}
               config={GUIDED_REVIEW_CONFIGS[selectedRequest.template_id]}
               isInternal={!profile}
               selectedAuthorId={selectedAuthorId}
+              authors={updateAuthors}
+              initialItemKey={deepLinkedItemKey}
               onSubmitted={async (updated) => {
                 setSelectedRequest(prev => ({ ...prev, ...(updated || {}) }));
                 await loadRequests();
@@ -1292,7 +1394,7 @@ export default function ClientInputRequirements({ selectedAuthorId = "", updateA
               ))
             )}
           </div>
-          )}
+          ))}
 
           {!isGuidedReview && canEditResponses && sections.length > 0 && (
             <div className="p-6 bg-slate-50 border-t border-slate-200 flex flex-wrap items-center justify-end gap-4">

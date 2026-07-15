@@ -8,6 +8,8 @@ import { PROGRAMME_PHASES, TICKET_URGENCY, PROGRAMME_ENTITIES } from '../data/pr
 import { ticketResponsibility } from '../utils/responsibility';
 import { ResponsibilityBadge } from '../components/Badge';
 import { explainDbError } from '../utils/dbErrors';
+import CopyLinkButton from '../components/CopyLinkButton';
+import { buildSupportIssuePath, buildSupportIssueUrl } from '../utils/trackerRoutes';
 
 const URGENCY_BADGE = {
   // Live DB values (delivery_assurance_operational_fields.sql CHECK constraint):
@@ -43,6 +45,7 @@ export default function SupportIssues({ selectedAuthorId = "", authors = [], onS
   const canCreateSupportIssue = isClient || isInternalOperator;
   const [tickets, setTickets] = useState([]);
   const [selectedTicket, setSelectedTicket] = useState(null);
+  const [targetError, setTargetError] = useState(null);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
   const [actionError, setActionError] = useState(null);
@@ -91,6 +94,12 @@ export default function SupportIssues({ selectedAuthorId = "", authors = [], onS
     // operator's register loads through the author-validated RPC.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile, selectedAuthorId]);
+
+  useEffect(() => {
+    if (selectedTicket) {
+      document.title = `Support - ${selectedTicket.title || 'Issue'}`;
+    }
+  }, [selectedTicket]);
 
   // Persona-correct read path (V4A.11)
   const fetchRegister = async () => {
@@ -289,7 +298,9 @@ export default function SupportIssues({ selectedAuthorId = "", authors = [], onS
     }
   };
 
-  const handleSelectTicket = async (ticket) => {
+  const handleSelectTicket = async (ticket, options = {}) => {
+    if (!options.preserveHash) window.location.hash = buildSupportIssuePath(ticket.id);
+    setTargetError(null);
     setSelectedTicket(ticket);
     setIsEditing(false);
     setActionError(null);
@@ -459,11 +470,18 @@ export default function SupportIssues({ selectedAuthorId = "", authors = [], onS
   // detail (which loads the conversation), then clear the consumed target.
   useEffect(() => {
     if (!targetRecordId || loading) return;
+    if (needsAuthorSelection) return;
     const found = tickets.find(t => t.id === targetRecordId);
-    if (found) handleSelectTicket(found);
-    if (onRecordTargetConsumed) onRecordTargetConsumed();
+    if (found) {
+      handleSelectTicket(found, { preserveHash: true });
+      if (onRecordTargetConsumed) onRecordTargetConsumed();
+    } else if (tickets.length > 0) {
+      setTargetError('This item could not be found.');
+      setSelectedTicket(null);
+      if (onRecordTargetConsumed) onRecordTargetConsumed();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [targetRecordId, loading, tickets]);
+  }, [targetRecordId, loading, needsAuthorSelection, tickets]);
 
   const isStale = (ticket) => {
     if (['Closed'].includes(ticket.status)) return false;
@@ -492,7 +510,10 @@ export default function SupportIssues({ selectedAuthorId = "", authors = [], onS
       <div className="flex-1 overflow-y-auto p-4 md:p-8 max-w-5xl mx-auto flex flex-col md:flex-row gap-6">
         <div className="flex-1">
           <button
-            onClick={() => setSelectedTicket(null)}
+            onClick={() => {
+              setSelectedTicket(null);
+              window.location.hash = '/support';
+            }}
             className="text-navy hover:text-gold text-sm font-bold mb-6 flex items-center gap-2"
           >
             <ChevronRight className="w-4 h-4 rotate-180" /> Back to Tickets
@@ -522,6 +543,7 @@ export default function SupportIssues({ selectedAuthorId = "", authors = [], onS
                     )}
                   </div>
                 </div>
+                <CopyLinkButton getUrl={() => buildSupportIssueUrl(selectedTicket.id)} label="Copy Support Issue Link" />
                 {!isClosed && !isEditing && (
                   <button
                     onClick={() => {
@@ -879,6 +901,11 @@ export default function SupportIssues({ selectedAuthorId = "", authors = [], onS
       {needsAuthorSelection && !loadError && (
         <div className="mb-4 p-3 rounded-lg border border-amber-200 bg-amber-50 text-amber-800 text-sm">
           Select an Active Editor in the sidebar to load the support issue register.
+        </div>
+      )}
+      {targetError && (
+        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm font-bold text-amber-800" role="alert">
+          {targetError}
         </div>
       )}
 

@@ -1,6 +1,20 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import {
+  MAIN_ROUTES,
+  ORG_SLUGS,
+  buildClientRequestPath,
+  buildDeliveryItemPath,
+  buildExactReviewPath,
+  buildReviewItemPath,
+  buildReviewProgrammePath,
+  buildSupportIssuePath,
+  buildTrackerUrl,
+  decodeRouteValue,
+  encodeRouteValue,
+  parseTrackerRoute,
+} from '../src/utils/trackerRoutes.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1012,8 +1026,14 @@ function validate() {
     if (!gf.includes('Submit All Feedback to Embark')) {
       errors.push("GuidedReviewForm.jsx is missing the Submit All Feedback to Embark action");
     }
-    if (!gf.includes('upsertInternalReviewEntry') || !gf.includes('upsertReviewEntry')) {
+    // V4A.23: the internal persona persists through the VERSION-GUARDED save
+    // (stale writes rejected server-side); the authenticated persona keeps its
+    // RLS upsert. The old unguarded internal upsert must not return.
+    if (!gf.includes('saveInternalReviewEntryVersioned') || !gf.includes('upsertReviewEntry')) {
       errors.push("GuidedReviewForm.jsx does not persist review entries to Supabase for both personas — drafts must never live only in React state");
+    }
+    if (gf.includes('upsertInternalReviewEntry')) {
+      errors.push("GuidedReviewForm.jsx still uses the unguarded internal upsert — internal saves must go through the version-guarded RPC");
     }
     if (!gf.includes('N/A — No Changes Required')) {
       errors.push("GuidedReviewForm.jsx is missing the N/A — No Changes Required option");
@@ -1178,7 +1198,7 @@ function validate() {
   if (!appJsxV14.includes('pendingRecordTarget') || !appJsxV14.includes('openWorkspaceRecord')) {
     errors.push("App.jsx is missing the record-target navigation mechanism (pendingRecordTarget/openWorkspaceRecord)");
   }
-  if (!/setPendingRecordTarget\(\{ view, recordId \}\)/.test(appJsxV14)) {
+  if (!/setPendingRecordTarget\(\{ view, recordId(?:, itemKey)?/.test(appJsxV14)) {
     errors.push("App.jsx record target must store only { view, recordId } — never a full record object");
   }
   if (!/setPendingRecordTarget\(null\)/.test(appJsxV14)) {
@@ -1258,6 +1278,84 @@ function validate() {
   }
   if (!/id: 'dashboard'[\s\S]{0,120}adminOnly: true/.test(appJsxV14)) {
     errors.push("App.jsx internal Command Center is no longer adminOnly — clients must not see it");
+  }
+
+  // 23f. Deep-link route contract: deterministic frontend-only checks, no
+  // live Supabase dependency.
+  const mainSlugs = Object.values(MAIN_ROUTES);
+  if (new Set(mainSlugs).size !== mainSlugs.length) {
+    errors.push("trackerRoutes MAIN_ROUTES contains duplicate section slugs");
+  }
+  if (MAIN_ROUTES.delivery !== 'delivery-board') {
+    errors.push("Delivery Board main section must route to #/delivery-board; #/delivery/:id is reserved for exact delivery records");
+  }
+  const orgSlugs = Object.values(ORG_SLUGS);
+  if (new Set(orgSlugs).size !== orgSlugs.length) {
+    errors.push("trackerRoutes ORG_SLUGS contains duplicate organisation slugs");
+  }
+  [
+    ['/reviews', { type: 'reviews', view: 'filament_reviews' }],
+    ['/reviews/filament/presentation', { type: 'reviews', organisationSlug: 'filament', programmeSlug: 'presentation' }],
+    ['/reviews/chasm-bridge-charity/website/review/req-op-1/item/website-home-hero', { type: 'reviews', recordId: 'req-op-1', itemKey: 'website-home-hero' }],
+    [buildSupportIssuePath('ticket-op-1'), { type: 'record', view: 'support', recordId: 'ticket-op-1' }],
+    [buildClientRequestPath('req-op-1'), { type: 'record', view: 'client_input', recordId: 'req-op-1' }],
+    [buildDeliveryItemPath('task-later-system-build'), { type: 'record', view: 'delivery', recordId: 'task-later-system-build' }],
+  ].forEach(([pathValue, expected]) => {
+    const parsed = parseTrackerRoute(pathValue);
+    Object.entries(expected).forEach(([key, value]) => {
+      if (parsed[key] !== value) errors.push(`Route parse mismatch for ${pathValue}: expected ${key}=${value}, got ${parsed[key]}`);
+    });
+  });
+  if (parseTrackerRoute('/reviews/chasm-bridge-charity/presentation').type !== 'invalid') {
+    errors.push("Invalid organisation/programme combination must fail safely");
+  }
+  if (parseTrackerRoute('/not-a-real-section').type !== 'invalid') {
+    errors.push("Unsupported main section must parse to invalid");
+  }
+  if (buildReviewProgrammePath('filament', 'presentation') !== '/reviews/filament/presentation') {
+    errors.push("Review programme route generation regressed");
+  }
+  if (buildExactReviewPath('filament', 'presentation', 'req-op-1') !== '/reviews/filament/presentation/review/req-op-1') {
+    errors.push("Exact review route generation regressed");
+  }
+  if (buildReviewItemPath('filament', 'presentation', 'req-op-1', 'slide-12') !== '/reviews/filament/presentation/review/req-op-1/item/slide-12') {
+    errors.push("Exact review item route generation regressed");
+  }
+  if (decodeRouteValue(encodeRouteValue('slide-12')) !== 'slide-12') {
+    errors.push("Review item key encoding/decoding symmetry failed");
+  }
+  if (buildTrackerUrl('/reviews/filament/presentation') !== 'https://ndumiso-y.github.io/Tracker-ChasmbridgeandFilament/#/reviews/filament/presentation') {
+    errors.push("Production fallback route URL does not preserve the GitHub Pages base path");
+  }
+  const mainJsxForRoutes = fs.readFileSync(path.join(__dirname, '../src/main.jsx'), 'utf8');
+  if (!mainJsxForRoutes.includes('HashRouter') || mainJsxForRoutes.includes('BrowserRouter')) {
+    errors.push("Router regression: HashRouter must remain and BrowserRouter must not be introduced");
+  }
+  const routeUtilitySrc = fs.readFileSync(path.join(__dirname, '../src/utils/trackerRoutes.js'), 'utf8');
+  if (!routeUtilitySrc.includes('ORG_PROGRAMME_SLUGS')) {
+    errors.push("trackerRoutes is missing explicit organisation/programme allowlist protection");
+  }
+  const copyButtonSrc = fs.readFileSync(path.join(__dirname, '../src/components/CopyLinkButton.jsx'), 'utf8');
+  if (!copyButtonSrc.includes('await navigator.clipboard.writeText') || !copyButtonSrc.includes('setState("manual")')) {
+    errors.push("CopyLinkButton must wait for Clipboard API success and expose manual fallback on failure");
+  }
+  const sidebarNavBlock = appJsxV14.slice(appJsxV14.indexOf('{filteredNavGroups.map'), appJsxV14.indexOf('<div className="border-t border-white/10 p-4'));
+  if (/CopyLinkButton|Copy \$\{item\.label\}|Copy .*Section Link/.test(sidebarNavBlock)) {
+    errors.push("Sidebar navigation must not render CopyLinkButton or copy-link labels");
+  }
+  if (appJsxV14.includes('buildMainSectionUrl')) {
+    errors.push("App.jsx must not generate per-section copy links inside the sidebar");
+  }
+  if (!/navigateToView\(item\.id\)/.test(sidebarNavBlock)) {
+    errors.push("Sidebar navigation must route through the central routeForView/navigateToView path");
+  }
+  const reviewLensRoutes = fs.readFileSync(path.join(__dirname, '../src/views/FilamentReviews.jsx'), 'utf8');
+  if (/Copy Comparison Link|buildComparison/i.test(reviewLensRoutes)) {
+    errors.push("Reviews lens must not advertise comparison deep links before a working route exists");
+  }
+  const guidedFormRoutes = fs.readFileSync(path.join(__dirname, '../src/components/GuidedReviewForm.jsx'), 'utf8');
+  if (!guidedFormRoutes.includes('initialItemKey') || !guidedFormRoutes.includes('explicitIndex >= 0')) {
+    errors.push("GuidedReviewForm must give explicit item routes precedence over first-unreviewed resume");
   }
 
   // 23e. Progressive-disclosure intake: the fast log surface leads with the
@@ -2254,7 +2352,13 @@ function validate() {
     'Review Questions',
     'Submit Strategy Feedback to Embark',
   ].forEach(copy => {
-    if (!socialGuidedForm.includes(copy) && !guidedCfgV20.includes(copy)) {
+    // The DISCUSS IN MEETING persistence marker moved to its single source of
+    // truth in src/utils/reviewConflicts.js (V4A.23) so the form, the peer
+    // panel and the comparison all detect it identically — accept it there.
+    const conflictUtilV23 = fs.existsSync(path.join(__dirname, '../src/utils/reviewConflicts.js'))
+      ? fs.readFileSync(path.join(__dirname, '../src/utils/reviewConflicts.js'), 'utf8')
+      : '';
+    if (!socialGuidedForm.includes(copy) && !guidedCfgV20.includes(copy) && !conflictUtilV23.includes(copy)) {
       errors.push(`Social strategy review form is missing copy/contract: ${copy}`);
     }
   });
@@ -2300,6 +2404,227 @@ function validate() {
     .join('\n');
   if (/Supabase|migration|SQL Editor/.test(socialRenderedSources)) {
     errors.push("Social strategy rendered surfaces may expose implementation language to clients");
+  }
+
+  // ==========================================================================
+  // 29. V4A.23 — SAFE MULTI-REVIEWER GUIDED REVIEWS.
+  //     One reviewer pass = one request; sibling passes share review_group_id;
+  //     entries stay UNIQUE(request_id, review_item_key). Independence,
+  //     attribution, optimistic locking, peer visibility, comparison,
+  //     consolidation, legacy compatibility.
+  // ==========================================================================
+  const mrPath = path.join(__dirname, '../supabase/multi_reviewer_guided_reviews_v1.sql');
+  if (!fs.existsSync(mrPath)) {
+    errors.push("Missing supabase/multi_reviewer_guided_reviews_v1.sql");
+  } else {
+    const mr = fs.readFileSync(mrPath, 'utf8');
+
+    // 29a. Review-item-type widening: all four inventories, atomic swap.
+    ['Company Profile Page', 'Presentation Slide', 'Website Section', 'Social Media Strategy Section'].forEach(t => {
+      if (!mr.includes(`'${t}'`)) errors.push(`multi_reviewer migration CHECK is missing review_item_type: ${t}`);
+    });
+    if (!/DROP CONSTRAINT IF EXISTS client_input_review_entries_review_item_type_check,\s*\n\s*ADD CONSTRAINT/.test(mr)) {
+      errors.push("review_item_type constraint swap is not a single atomic ALTER (table must never be unprotected)");
+    }
+
+    // 29b. Review round + reviewer identity + snapshot + entry attribution.
+    ['review_group_id uuid', 'reviewer_author_id text REFERENCES update_authors(id)', 'reviewer_display_name text',
+      'recorded_by_author_id text REFERENCES update_authors(id)', 'recorded_by_user_id uuid'].forEach(c => {
+      if (!mr.includes(c)) errors.push(`multi_reviewer migration is missing column contract: ${c}`);
+    });
+    if (!mr.includes('stamp_review_entry_attribution')) {
+      errors.push("multi_reviewer migration is missing the authenticated attribution stamp trigger");
+    }
+
+    // 29c. Duplicate reviewer-pass protection — both identity paths, partial
+    // (NULL/legacy rows excluded, archived slot freed).
+    if (!/uniq_reviewer_pass_per_round_author[\s\S]*?WHERE review_group_id IS NOT NULL AND reviewer_author_id IS NOT NULL AND archived_at IS NULL/.test(mr)) {
+      errors.push("Missing NULL-safe partial unique index for internal reviewer passes");
+    }
+    if (!/uniq_reviewer_pass_per_round_contributor[\s\S]*?WHERE review_group_id IS NOT NULL AND assigned_contributor_user_id IS NOT NULL AND archived_at IS NULL/.test(mr)) {
+      errors.push("Missing NULL-safe partial unique index for authenticated reviewer passes");
+    }
+
+    // 29d. Round creation + add-reviewer + consolidation-closure rule.
+    if (!mr.includes('create_internal_review_round') || !mr.includes('add_internal_reviewer_pass')) {
+      errors.push("multi_reviewer migration is missing the round-creation / add-reviewer RPCs");
+    }
+    if (!/already been consolidated — start a new review round/.test(mr)) {
+      errors.push("add_internal_reviewer_pass does not refuse consolidated (closed) rounds");
+    }
+    if (!/is already a reviewer in this review round/.test(mr)) {
+      errors.push("add_internal_reviewer_pass is missing the duplicate reviewer refusal");
+    }
+
+    // 29e. Optimistic locking: version-guarded save, row lock, honest stale
+    // message; the write is rejected — never merged.
+    if (!mr.includes('save_internal_client_input_review_entry')) {
+      errors.push("multi_reviewer migration is missing the version-guarded save RPC");
+    }
+    if (!mr.includes('This section changed after you opened it. Reload the latest version before saving.')) {
+      errors.push("Version-guarded save is missing the stale-write rejection message");
+    }
+    if (!/FOR UPDATE/.test(mr)) {
+      errors.push("Version-guarded save does not lock the row (same-millisecond saves must serialise)");
+    }
+    if (!/p_expected_updated_at IS NOT NULL/.test(mr)) {
+      errors.push("Version-guarded save does not handle the first-insert (NULL expected version) case");
+    }
+
+    // 29f. Controlled peer read: independence-first gate server-side; display
+    // names + timestamps only — never identity ids.
+    if (!mr.includes('get_internal_peer_review_feedback')) {
+      errors.push("multi_reviewer migration is missing the controlled peer feedback read");
+    } else {
+      const peerFn = mr.slice(mr.indexOf('get_internal_peer_review_feedback'));
+      const peerReturns = peerFn.slice(peerFn.indexOf('RETURNS TABLE'), peerFn.indexOf('LANGUAGE'));
+      if (/request_id|author_id|user_id/.test(peerReturns)) {
+        errors.push("Peer feedback read must not project identity ids — display names and timestamps only");
+      }
+      if (!/review_status <> 'Not Reviewed'[\s\S]*?RETURN;/.test(peerFn)) {
+        errors.push("Peer feedback read does not enforce independence-first (own saved response required) server-side");
+      }
+    }
+
+    // 29g. Consolidation: separate record, Embark-only write, driving pass
+    // must belong to the round; original feedback is never touched.
+    if (!mr.includes('client_input_review_consolidations')) {
+      errors.push("multi_reviewer migration is missing the consolidation record");
+    }
+    if (!/Consolidating reviewer feedback is an Embark Digitals decision/.test(mr)) {
+      errors.push("save_internal_review_consolidation is not Embark-only");
+    }
+    if (!/must belong to this review round/.test(mr)) {
+      errors.push("Consolidation does not validate the production-driving review belongs to the round");
+    }
+    if (/UPDATE client_input_review_entries|DELETE FROM client_input_review_entries/.test(mr.slice(mr.indexOf('save_internal_review_consolidation')))) {
+      errors.push("Consolidation must never rewrite or delete reviewer entries");
+    }
+
+    // 29h. Register read recreated with the reviewer columns; security posture.
+    if (!/DROP FUNCTION IF EXISTS get_internal_client_input_requests/.test(mr)) {
+      errors.push("multi_reviewer migration must recreate the internal register read (return-type change needs DROP)");
+    }
+    if (!/r\.review_group_id,\s*\n\s*r\.reviewer_author_id,\s*\n\s*r\.reviewer_display_name/.test(mr)) {
+      errors.push("Recreated register read does not return the reviewer pass columns");
+    }
+    if (/USING \(true\)|service_role/.test(mr)) {
+      errors.push("multi_reviewer migration adds a forbidden broad policy or service_role reference");
+    }
+    if ((mr.match(/REVOKE ALL ON FUNCTION/g) || []).length < 6) {
+      errors.push("multi_reviewer migration is missing REVOKE PUBLIC on one or more new functions");
+    }
+    // Order safety: this migration must NOT redefine the shared completeness
+    // gates owned by social_media_strategy_reviews_v1.sql (final superset).
+    if (mr.includes('submit_internal_client_input_review(') || mr.includes('enforce_guided_review_completeness')) {
+      errors.push("multi_reviewer migration must not redefine the shared completeness gates — social_media_strategy_reviews_v1.sql is the final superset");
+    }
+  }
+
+  // 29i. Completeness counts preserved per reviewer pass (per request): the
+  // final superset gate keeps all seven template counts.
+  {
+    const socialSqlPath = path.join(__dirname, '../supabase/social_media_strategy_reviews_v1.sql');
+    if (fs.existsSync(socialSqlPath)) {
+      const socialSql = fs.readFileSync(socialSqlPath, 'utf8');
+      ["'template-filament-profile-review' THEN 16", "'template-filament-slides-review' THEN 43",
+        "'template-filament-slides-review-v2' THEN 61", "'template-filament-website-review-v1' THEN 32",
+        "'template-chasm-bridge-website-review-v1' THEN 31", "'template-filament-social-media-strategy-review-v1' THEN 14",
+        "'template-chasm-bridge-social-media-strategy-review-v1' THEN 14"].forEach(m => {
+        if (!socialSql.includes(m)) errors.push(`Final completeness gate lost a template count mapping: ${m}`);
+      });
+      if (!/WHERE e\.request_id = p_request_id/.test(socialSql)) {
+        errors.push("Completeness must stay per request (= per reviewer pass), never across the review group");
+      }
+    }
+  }
+
+  // 29j. Service layer.
+  const serviceV23 = fs.readFileSync(path.join(__dirname, '../src/services/collaborationService.js'), 'utf8');
+  ['createInternalReviewRound', 'addInternalReviewerPass', 'saveInternalReviewEntryVersioned',
+    'getInternalPeerReviewFeedback', 'saveInternalReviewConsolidation', 'getInternalReviewConsolidation'].forEach(fn => {
+    if (!serviceV23.includes(fn)) errors.push(`collaborationService.js is missing ${fn}`);
+  });
+
+  // 29k. Guided form: stale-save recovery, attribution, independence-first
+  // peer visibility bound to the CURRENT pass's own request id only.
+  const gfV23 = fs.readFileSync(path.join(__dirname, '../src/components/GuidedReviewForm.jsx'), 'utf8');
+  if (!gfV23.includes("'stale'") || !gfV23.includes('Reload Latest Version')) {
+    errors.push("GuidedReviewForm.jsx is missing the stale-save state and reload recovery");
+  }
+  if (!gfV23.includes('This section changed after you opened it')) {
+    errors.push("GuidedReviewForm.jsx is missing the stale-save user message");
+  }
+  if (!gfV23.includes('expectedUpdatedAt')) {
+    errors.push("GuidedReviewForm.jsx does not send the loaded version with each save");
+  }
+  if (!gfV23.includes('Complete your response first to view other reviewer feedback')) {
+    errors.push("GuidedReviewForm.jsx is missing the independence-first peer gate message");
+  }
+  if (!gfV23.includes('Other Reviewer Feedback')) {
+    errors.push("GuidedReviewForm.jsx is missing the read-only peer feedback panel");
+  }
+  if (!/getInternalPeerReviewFeedback\(selectedAuthorId, request\.id/.test(gfV23)) {
+    errors.push("Peer feedback must be scoped to the current pass's own request id");
+  }
+
+  // 29l. Reviews lens: rounds + one row per reviewer pass; no newest-request
+  // collapse; truthful legacy label; plain-language creation.
+  const lensV23 = fs.readFileSync(path.join(__dirname, '../src/views/FilamentReviews.jsx'), 'utf8');
+  if (!lensV23.includes('review_group_id')) {
+    errors.push("FilamentReviews.jsx does not group requests into review rounds by review_group_id");
+  }
+  if (!lensV23.includes('Current Review Round') || !lensV23.includes('Previous Review Rounds')) {
+    errors.push("FilamentReviews.jsx is missing the current/previous review round grouping");
+  }
+  if (!lensV23.includes('Legacy Review')) {
+    errors.push("FilamentReviews.jsx is missing the truthful Legacy Review label for ungrouped records");
+  }
+  if (!lensV23.includes('Add Reviewer') || !lensV23.includes('Compare Feedback')) {
+    errors.push("FilamentReviews.jsx is missing the Add Reviewer / Compare Feedback actions");
+  }
+  if (!lensV23.includes('Who will review this asset?')) {
+    errors.push("FilamentReviews.jsx is missing the reviewer picker question");
+  }
+  if (/function pickActive\(/.test(lensV23)) {
+    errors.push("FilamentReviews.jsx still collapses a programme to one newest request (pickActive) — every reviewer pass must be visible");
+  }
+  if (!/currentRound\.passes\.map/.test(lensV23)) {
+    errors.push("FilamentReviews.jsx does not render one row per reviewer pass");
+  }
+  if (!lensV23.includes('Awaiting Reviewer')) {
+    errors.push("FilamentReviews.jsx is missing the Awaiting Reviewer pass status");
+  }
+
+  // 29m. Conflict derivation: deterministic, all seven statuses, joined by
+  // review_item_key — never array order; no AI/semantic comparison.
+  const conflictsPath = path.join(__dirname, '../src/utils/reviewConflicts.js');
+  if (!fs.existsSync(conflictsPath)) {
+    errors.push("Missing src/utils/reviewConflicts.js");
+  } else {
+    const rc = fs.readFileSync(conflictsPath, 'utf8');
+    ['Aligned — Approved', 'Aligned — Changes Requested', 'Different Feedback', 'Approval Conflict',
+      'Discuss in Meeting', 'Awaiting Reviewer', 'Partially Reviewed'].forEach(s => {
+      if (!rc.includes(`'${s}'`)) errors.push(`reviewConflicts.js is missing conflict status: ${s}`);
+    });
+    if (!rc.includes(".replace(/\\s+/g, ' ').trim().toLowerCase()")) {
+      errors.push("reviewConflicts.js equivalence must be deterministic normalisation (whitespace/case), never semantic");
+    }
+  }
+  const cmpPath = path.join(__dirname, '../src/components/ReviewComparisonPanel.jsx');
+  if (!fs.existsSync(cmpPath)) {
+    errors.push("Missing src/components/ReviewComparisonPanel.jsx");
+  } else {
+    const cmp = fs.readFileSync(cmpPath, 'utf8');
+    if (!cmp.includes('review_item_key')) {
+      errors.push("ReviewComparisonPanel.jsx must join reviewer responses by review_item_key, never array order");
+    }
+    if (!cmp.includes('Final Agreed Instruction') || !cmp.includes('Consolidate Reviewer Feedback')) {
+      errors.push("ReviewComparisonPanel.jsx is missing the Embark consolidation experience");
+    }
+    if (!cmp.includes('Embark Digitals decision')) {
+      errors.push("ReviewComparisonPanel.jsx does not explain the Embark-only consolidation gate");
+    }
   }
 
   if (errors.length > 0) {
